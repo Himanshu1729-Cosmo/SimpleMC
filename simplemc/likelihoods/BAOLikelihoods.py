@@ -8,6 +8,7 @@ from simplemc.likelihoods.GaussBAODVLikelihood import GaussBAODVLikelihood
 from simplemc.likelihoods.ConsensusBAOLikelihood import ConsensusBAOLikelihood
 from simplemc.likelihoods.DR16BAOLikelihood import DR16BAOLikelihood
 from simplemc.likelihoods.DESIBAOLikelihood import DESIBAOLikelihood
+from simplemc.likelihoods.DESIDR2BAOLikelihood import DESIDR2BAOLikelihood
 from simplemc.models.LCDMCosmology import LCDMCosmology
 from simplemc.setup_logger import cdir
 
@@ -128,7 +129,6 @@ class SixdFGS(GaussBAODVLikelihood):
             self, "SixdFGS", 0.106, 456.0, 27.0, fidTheory, maxchi2=4)
 
 
-
 # SDSS Main Galaxy Sample BAO
 class SDSSMGS(TabulatedBAODVLikelihood):
     def __init__(self):
@@ -163,3 +163,17 @@ class DESIBAO(DESIBAOLikelihood):
         fidtheory = LCDMCosmology(obh2, Om, h, mnu)
         DESIBAOLikelihood.__init__(self, "DESIBAO", cdir+"/data/desi_2024_gaussian_bao_ALL_GCcomb_mean.txt",
                                       cdir+"/data/desi_2024_gaussian_bao_ALL_GCcomb_cov.txt", fidtheory)
+        
+             
+class DESIDR2BAO(DESIDR2BAOLikelihood):
+    """
+    Likelihood to full DESIBAO compilation.
+    """
+    def __init__(self):
+        obh2 = 0.022
+        Om   = 0.2975
+        h    = 0.676
+        mnu  = 0.06
+        fidtheory = LCDMCosmology(obh2, Om, h, mnu)
+        DESIDR2BAOLikelihood.__init__(self, "DESIDR2BAO", cdir+"/data/desi_gaussian_bao_ALL_GCcomb_mean.txt",
+                                          cdir+"/data/desi_gaussian_bao_ALL_GCcomb_cov.txt", fidtheory)
