@@ -24,11 +24,22 @@ class DESY5Likelihood(BaseLikelihood):
         BaseLikelihood.__init__(self, name)
         print("Loading", values_filename)
         da = pd.read_csv(values_filename)
-        self.zcmb = da['zHD']
-        self.zhelio = da['zHEL']
-        self.mag = da['MU']
-        self.dmag = da['MUERR_FINAL'] 
+
+        # Apply the filter for zHD > 0.01
+        self.ww = (da['zHD'] > 0.01)  # Filter condition
+        self.zcmb = da['zHD'][self.ww]  # Apply filter to zHD
+        self.zhelio = da['zHEL'][self.ww]  # Apply filter to zHEL
+        self.mag = da['MU'][self.ww]  # Apply filter to magnitude
+        self.dmag = da['MUERR_FINAL'][self.ww]  # Apply filter to magnitude error
         self.N = len(self.mag)
+
+        #self.zcmb = da['zHD']
+        #self.zhelio = da['zHEL']
+        #self.mag = da['MU']
+        #self.dmag = da['MUERR_FINAL'] 
+        #self.N = len(self.mag)
+
+        # Loading covariance matrix
         self.syscov = np.loadtxt(cov_filename, skiprows=1).reshape((self.N, self.N))
         self.cov = np.copy(self.syscov)
         self.cov[np.diag_indices_from(self.cov)] += self.dmag**2
@@ -68,5 +79,3 @@ class DESY5(DESY5Likelihood):
     def __init__(self):
         DESY5Likelihood.__init__(self, "DESY5", cdir+"/data/DES-SN5YR_HD.csv",
                                       cdir+"/data/covsys_000.txt")
-
-
