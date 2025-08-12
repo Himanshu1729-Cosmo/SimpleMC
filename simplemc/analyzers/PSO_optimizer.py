@@ -14,7 +14,6 @@ from simplemc.plots.Plot_elipses import plot_elipses
 import matplotlib.pyplot as plt
 import scipy.linalg as la
 import numpy as np
-import scipy as sp
 
 class PSO_optimizer():
     """
@@ -62,7 +61,7 @@ class PSO_optimizer():
         self.params = like.freeParameters()
         self.vpars = [p.value for p in self.params]
         self.npars = [p.name for p in self.params]
-        self.sigma = sp.array([p.error for p in self.params])
+        self.sigma = np.array([p.error for p in self.params])
         self.cov = None
 
         bounds = [p.bounds for p in self.params]
@@ -188,7 +187,7 @@ class PSO_optimizer():
 
             # set errors:
             for i, pars in enumerate(self.params):
-                pars.setError(sp.sqrt(self.cov[i, i]))
+                pars.setError(np.sqrt(self.cov[i, i]))
 
             with open('{}.cov'.format(self.outputname), 'w') as f:
                 np.savetxt(f, self.cov, fmt='%.4e', delimiter=',')
