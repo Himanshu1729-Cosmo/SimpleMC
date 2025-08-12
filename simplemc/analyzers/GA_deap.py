@@ -7,7 +7,6 @@ from simplemc.plots.Plot_elipses import plot_elipses
 import matplotlib.pyplot as plt
 import scipy.linalg as la
 import multiprocessing
-import scipy as sp
 import numpy as np
 import random
 import sys
@@ -47,7 +46,7 @@ class GA_deap:
         self.params = like.freeParameters()
         self.vpars = [p.value for p in self.params]
         self.npars = [p.name for p in self.params]
-        self.sigma = sp.array([p.error for p in self.params])
+        self.sigma = np.array([p.error for p in self.params])
         self.bounds = [p.bounds for p in self.params]
         self.cov = None
 
@@ -143,7 +142,7 @@ class GA_deap:
             print('Covariance matrix \n', self.cov)
             # set errors:
             for i, pars in enumerate(self.params):
-                pars.setError(sp.sqrt(self.cov[i, i]))
+                pars.setError(np.sqrt(self.cov[i, i]))
 
             with open('{}.cov'.format(self.outputname), 'w') as f:
                 np.savetxt(f, self.cov, fmt='%.4e', delimiter=',')
@@ -195,7 +194,7 @@ class GA_deap:
             for j in range(len(individuals)):
                 if i != j:
                     # calculate eucledean distance between individuals:
-                    distance = math.sqrt(
+                    distance = np.sqrt(
                         ((individuals[i][0] - individuals[j][0]) ** 2) + ((individuals[i][1] - individuals[j][1]) ** 2))
 
                     if distance < DISTANCE_THRESHOLD:
@@ -284,7 +283,7 @@ class GA_deap:
         if self.sharing:
             loglike = -loglike
 
-        if sp.isnan(loglike):
+        if np.isnan(loglike):
             print('-1-'*10,loglike,'--'*10)
             return self.lastval+10
         else:
@@ -302,7 +301,7 @@ class GA_deap:
         if self.sharing:
             loglike = -loglike
 
-        if sp.isnan(loglike):
+        if np.isnan(loglike):
             return self.lastval+10
         else:
             self.lastval = -loglike
