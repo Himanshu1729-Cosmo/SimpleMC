@@ -1,4 +1,4 @@
-SimpleMC
+This Version of SimpleMC of Himanshu Chaudhary
 ==========
 
 A code for cosmological parameter estimation where only
