@@ -19,7 +19,7 @@ Temporary documentation in: https://igomezv.github.io/SimpleMC/
 
 You can install simplemc on your computer using:
 
-     $ git clone https://github.com/ja-vazquez/SimpleMC 
+     $ git clone https://github.com/1729Him/SimpleMC 
      
      # core packages required
      pip install  matplotlib scipy numdifftools mpi4py
