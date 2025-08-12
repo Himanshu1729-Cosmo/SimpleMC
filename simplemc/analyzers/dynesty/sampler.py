@@ -20,7 +20,6 @@ from functools import partial
 import math
 import copy
 import numpy as np
-import scipy as sp
 try:
     from scipy.special import logsumexp
 except ImportError:
