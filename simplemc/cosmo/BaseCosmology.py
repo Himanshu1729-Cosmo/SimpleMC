@@ -29,7 +29,7 @@ class BaseCosmology:
     def __init__(self, h=h_par.value):
         
         self.Curv = 0
-        self.rd = 147.49
+        self.rd = 147.09
         self.h = h
         self.prefact = Pr_par.value
         self.s8 = s8_par.value
