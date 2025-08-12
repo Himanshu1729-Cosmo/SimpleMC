@@ -1,7 +1,7 @@
 
 
 
-import scipy as sp
+import numpy as np
 from simplemc.likelihoods.BaseLikelihood import BaseLikelihood
 from scipy.interpolate import RectBivariateSpline
 
@@ -31,7 +31,7 @@ class TabulatedBAOLikelihood(BaseLikelihood):
         BaseLikelihood.__init__(self, name)
         print()
         print("Loading ", filename)
-        data = sp.loadtxt(filename, skiprows=skiprows)
+        data = np.loadtxt(filename, skiprows=skiprows)
         # first let's autolearn the binning
         aperp = set()
         aparl = set()
@@ -40,14 +40,14 @@ class TabulatedBAOLikelihood(BaseLikelihood):
             aparl.add(line[apar_col])
         aperp   = sorted(list(aperp))
         aparl   = sorted(list(aparl))
-        logltab = sp.zeros((len(aperp), len(aparl)))
+        logltab = np.zeros((len(aperp), len(aparl)))
         print("Aperp min,max,step,N:",
               aperp[0], aperp[-1], aperp[1]-aperp[0], len(aperp))
         print("Aparl min,max,step,N:",
               aparl[0], aparl[-1], aparl[1]-aparl[0], len(aparl))
 
-        self.aperp = sp.array(aperp)
-        self.aparl = sp.array(aparl)
+        self.aperp = np.array(aperp)
+        self.aparl = np.array(aparl)
 
         # now fill in the table
         for line in data:
@@ -58,7 +58,7 @@ class TabulatedBAOLikelihood(BaseLikelihood):
                 logltab[ii, jj] = -chi2/2.0
             else:
                 # col is probability, add 1e-50 to avoid taking log of zero.
-                logltab[ii, jj] = sp.log(line[chi2col*-1] + 1e-50)
+                logltab[ii, jj] = np.log(line[chi2col*-1] + 1e-50)
 
         logltab = logltab-logltab.max()
         self.loglint = RectBivariateSpline(
