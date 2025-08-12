@@ -22,9 +22,10 @@ You can install simplemc on your computer using:
      $ git clone https://github.com/1729Him/SimpleMC 
      
      # core packages required
-     pip install  matplotlib scipy numdifftools mpi4py
+     pip install  matplotlib numdifftools mpi4py
      pip install numpy==1.23.5
      pip install scikit-learn==1.2.2
+     pip install scipy=1.10.1
      
      $ cd SimpleMC
      
