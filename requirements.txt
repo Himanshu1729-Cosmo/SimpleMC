@@ -5,5 +5,5 @@ numdifftools
 matplotlib
 deap
 mpi4py
-pip install numpy==1.23.5
-pip install scikit-learn==1.2.2
+numpy==1.23.5
+scikit-learn==1.2.2
