@@ -3,7 +3,7 @@
 from simplemc.likelihoods.BaseLikelihood import BaseLikelihood
 from scipy import constants
 import scipy.linalg as la
-import scipy as sp
+import numpy as np
 
 
 class ConsensusBAOLikelihood(BaseLikelihood):
@@ -27,17 +27,17 @@ class ConsensusBAOLikelihood(BaseLikelihood):
 
         self.rd = fidtheory.rd
         print("Loading ", values_filename)
-        da = sp.loadtxt(values_filename, usecols = (0,1))
+        da = np.loadtxt(values_filename, usecols = (0,1))
         self.zs    = da[:, 0]
         self.DM_DH = da[:, 1]
 
 
         print("Loading ",cov_filename)
-        cov = sp.loadtxt(cov_filename, skiprows=0)
+        cov = np.loadtxt(cov_filename, skiprows=0)
 
         assert(len(cov) == len(self.zs))
         vals, vecs = la.eig(cov)
-        vals = sorted(sp.real(vals))
+        vals = sorted(np.real(vals))
         print("Eigenvalues of cov matrix:", vals[0:3],'...',vals[-1])
         print("Adding marginalising constant")
         cov += 3**2
@@ -51,7 +51,7 @@ class ConsensusBAOLikelihood(BaseLikelihood):
                 tvec.append(self.theory_.DaOverrd(z)*self.rd)
             else:
                 tvec.append(constants.c/1000./(self.theory_.HIOverrd(z))/self.rd)
-        tvec = sp.array(tvec)
+        tvec = np.array(tvec)
         #print('hi', self.theory_.DaOverrd(self.zs[0])*self.rd, self.DM_DH[0])
         #print('hi2', constants.c/1000./(self.theory_.HIOverrd(self.zs[1]))/self.rd, self.DM_DH[1])
         #pass
@@ -62,7 +62,4 @@ class ConsensusBAOLikelihood(BaseLikelihood):
         ## note that in principle this shouldn't matter too much, we will marginalise over this
         tvec += 0
         delta = tvec - self.DM_DH
-        return -sp.dot(delta, sp.dot(self.icov, delta))/2.0
-
-
-
+        return -np.dot(delta, np.dot(self.icov, delta))/2.0
