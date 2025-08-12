@@ -2,7 +2,6 @@ import numpy as np
 from simplemc.likelihoods.BaseLikelihood import BaseLikelihood
 from simplemc.models.LCDMCosmology import LCDMCosmology
 import scipy.linalg as la
-import numpy as sp
 from simplemc.setup_logger import cdir
 
 class DESIDR2BAOLikelihood(BaseLikelihood):
@@ -23,7 +22,7 @@ class DESIDR2BAOLikelihood(BaseLikelihood):
 
         self.rd = fidtheory.rd
         print("Loading ", values_filename)
-        da = sp.loadtxt(values_filename, usecols = (0 ,1 ,2))
+        da = np.loadtxt(values_filename, usecols = (0 ,1 ,2))
         self.zs    = da[:, 0]
         self.DM_DH = da[:, 1]
         self.type  = da[:, 2]
@@ -44,7 +43,7 @@ class DESIDR2BAOLikelihood(BaseLikelihood):
                 tvec.append(self.theory_.HIOverrd(z))
             elif self.type[i] == 3:
                 tvec.append(self.theory_.DVOverrd(z))
-        tvec = sp.array(tvec)
+        tvec = np.array(tvec)
         tvec += 0
         delta = tvec - self.DM_DH
-        return -sp.dot(delta, sp.dot(self.icov, delta))/2.0
+        return -np.dot(delta, np.dot(self.icov, delta))/2.0
