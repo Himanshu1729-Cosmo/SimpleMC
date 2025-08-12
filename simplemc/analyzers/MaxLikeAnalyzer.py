@@ -3,7 +3,6 @@ from simplemc.cosmo.Derivedparam import AllDerived
 from scipy.optimize import minimize
 import matplotlib.pyplot as plt
 import scipy.linalg as la
-import scipy as sp
 import numpy as np
 import sys
 
@@ -37,7 +36,7 @@ class MaxLikeAnalyzer:
         self.params = like.freeParameters()
         self.vpars = [p.value for p in self.params]
         self.npars = [p.name for p in self.params]
-        self.sigma = sp.array([p.error for p in self.params])
+        self.sigma = np.array([p.error for p in self.params])
         self.bounds = [p.bounds for p in self.params]
         self.cov = None
 
@@ -74,7 +73,7 @@ class MaxLikeAnalyzer:
             print('Covariance matrix \n', self.cov)
             # set errors:
             for i, pars in enumerate(self.params):
-                pars.setError(sp.sqrt(self.cov[i, i]))
+                pars.setError(np.sqrt(self.cov[i, i]))
 
             with open('{}.cov'.format(self.outputname), 'w') as f:
                 np.savetxt(f, self.cov, fmt='%.4e', delimiter=',')
@@ -109,7 +108,7 @@ class MaxLikeAnalyzer:
         self.like.updateParams(self.params)
         loglike = self.like.loglike_wprior()
 
-        if sp.isnan(loglike):
+        if np.isnan(loglike):
             return self.lastval+10
         else:
             self.lastval = -loglike
