@@ -36,7 +36,7 @@ class WangWangCMB(BaseLikelihood):
         return -np.dot(delt, np.dot(self.icov, delt))/2.0
     
 class PLKLikelihood(WangWangCMB):
-    def __init__(self, matrices="PLK18"):
+    def __init__(self, matrices="WW_ΛCDM"):
         if matrices == "WW":
             # arXiv:1304.4514 (Planck+lensing+WP)
             mean = [301.57, 1.7407, 0.02228]
@@ -93,7 +93,7 @@ class PLKLikelihood(WangWangCMB):
                     [0.54,    1.0,    -0.75],
                     [-0.42,  -0.75,    1.0]]
             
-        elif matrices == 'WW_LCDM_AL':
+        elif matrices == 'WW_ΛCDM_AL':
             # ΛCDM + A_L  arXiv:1808.05724 (Calibrated with Planck TT,TE,EE + lowE )
             mean = [3.01406e+02, 1.7428, 2.259e-02]
             err  = [0.090, 0.0053, 0.00017]
