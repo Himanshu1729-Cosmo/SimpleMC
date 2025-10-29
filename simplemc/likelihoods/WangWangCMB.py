@@ -16,7 +16,7 @@ print("Wang Wang DEPRECATED!")
 #sys.exit(1)
 
 
-class WangWangCMB (BaseLikelihood):
+class WangWangCMB(BaseLikelihood):
     def __init__(self, name, mean, err, cor):
         BaseLikelihood.__init__(self, name)
         self.mean = np.array(mean)
@@ -27,20 +27,18 @@ class WangWangCMB (BaseLikelihood):
         cov = np.array(cor)*np.outer(err, err)
         self.icov = la.inv(cov)
 
-
     def setTheory(self, theory):
         self.theory_ = theory
         self.theory_.setNoObh2prior()
 
-
     def loglike(self):
         delt = self.theory_.WangWangVec()-self.mean
         return -np.dot(delt, np.dot(self.icov, delt))/2.0
-
-
-class PlanckLikelihood(WangWangCMB):
+    
+class PLKLikelihood(WangWangCMB):
     def __init__(self, matrices="PLK18"):
         if matrices == "WW":
+            # arXiv:1304.4514 (Planck+lensing+WP)
             mean = [301.57, 1.7407, 0.02228]
             err = [0.18, 0.0094, 0.00030]
             cov = [[1.0, 0.5250, -0.4235],
@@ -67,33 +65,30 @@ class PlanckLikelihood(WangWangCMB):
             cov = [[1.,  0.62040041, -0.53470863],
                    [0.62040041,  1., -0.71007217],
                    [-0.53470863, -0.71007217,  1.]]
-
         elif matrices == 'PLK18':
-            # LCDM
+            # LCDM arXiv:1808.05724
             mean = [3.01471e+02, 1.7502, 2.236e-02]
             err = [0.089, 0.0046, 0.00015]
             cov = [[1., 0.46, -0.33],
                    [0.46, 1., -0.66],
                    [-0.33, -0.66, 1.0]]
-
         elif matrices == 'PLK18_w':
-            # wCDM
-            mean = [3.01462e+02, 1.7493, 2.239e-02 ]
+            # wCDM arXiv:1808.05724
+            mean = [3.01462e+02, 1.7493, 2.239e-02]
             err = [0.089, 0.0046, 0.00015]
             cov = [[1., 0.54, -0.42],
                    [0.54, 1., -0.75],
                    [-0.42, -0.75, 1.0]]
-
         else:
             print("Bad matrices param")
             sys.exit(1)
 
         WangWangCMB.__init__(self, "CMB_WW_"+matrices, mean, err, cov)
 
-
-class WMAP9Likelihood(WangWangCMB):
+class WMAPLikelihood(WangWangCMB):
     def __init__(self, matrices='PLA'):
         if matrices == "WW":
+            # arXiv:1304.4514 (WMAP9)
             mean = [302.02, 1.7327, 0.02260]
             err = [0.66, 0.0164, 0.00053]
             cov = [[1.0, 0.3883, -0.6089],
@@ -105,7 +100,6 @@ class WMAP9Likelihood(WangWangCMB):
             cov = [[1., 0.37679434, -0.61134328],
                    [0.37679434, 1., -0.51194784],
                    [-0.61134328, -0.51194784, 1.]]
-
         else:
             print("Basd mtrices param")
             sys.exit(1)
