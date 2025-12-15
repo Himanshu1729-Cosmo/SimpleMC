@@ -48,16 +48,15 @@ from .likelihoods.PantheonSNLikelihood import PantheonSN, BinnedPantheon
 from .likelihoods.PantheonPlusSNLikelihood import PantheonPlus
 from .likelihoods.UNION3Likelihood import UNION3
 from .likelihoods.DESY5Likelihood import DESY5
+from .likelihoods.DESY5exclikelihood import DESY5exc
+from .likelihoods.DesdovekieLikelihood import Desdovekie
 from .likelihoods.CompressedHDLikelihood import HubbleDiagram, HD23
 from .likelihoods.Compressedfs8Likelihood import fs8Diagram
 from .likelihoods.HubbleParameterLikelihood import RiessH0, RiessH0_21
 from .likelihoods.BBNLikelihood import BBN
-
 from .likelihoods.StrongLensingLikelihood import StrongLensing
-
 from .likelihoods.SimpleLikelihood import GenericLikelihood, StraightLine
 from .likelihoods.RotationCurvesLikelihood import RotationCurvesLike
-from .likelihoods.DESY5exclikelihood import DESY5exc
 
 #Importance Sampling
 #from .CosmoMCImportanceSampler import *
@@ -308,7 +307,9 @@ def ParseDataset(datasets, **kwargs):
         elif name == 'DESY5':
             L.addLikelihood(DESY5())
         elif name == 'DESY5exc':
-            L.addLikelihood(DESY5exc())
+            L.addLikelihood(DESY5exc())    
+        elif name == 'Desdovekie':
+            L.addLikelihood(Desdovekie())
         elif name == 'SN':
             L.addLikelihood(BetouleSN())
         elif name == 'SNx10':
