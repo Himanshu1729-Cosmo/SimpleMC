@@ -36,8 +36,8 @@ class WangWangCMB(BaseLikelihood):
         return -np.dot(delt, np.dot(self.icov, delt))/2.0
     
 class PLKLikelihood(WangWangCMB):
-    def __init__(self, matrices="PLK18"):
-        if matrices == "WW":
+    def __init__(self, matrices="WW_PLK18_ΛCDM"):
+        if matrices == "WW_WMAP7":
             # arXiv:1304.4514 (Planck + lensing + WP see Eq~12 and 13)
             mean = [301.57, 1.7407, 0.02228]
             err = [0.18, 0.0094, 0.00030]
@@ -45,6 +45,15 @@ class PLKLikelihood(WangWangCMB):
                    [0.5250, 1.0, -0.6925],
                    [-0.4235, -0.6925,  1.0]]
             
+            # arXiv:1304.4514 (WMAP9 see Eq~14 and 15)
+        elif matrices == "WW_WMAP9":
+            # base_omegak
+            mean = [302.02, 1.7327, 0.02260]
+            err = [0.66, 0.0164, 0.00053]
+            cov = [[1.0, 0.3883, -0.6089],
+                   [0.3883, 1.0, -0.5239],
+                   [-0.6089, -0.5239,  1.0]]
+
         elif matrices == "PLA1":
             # base_omegak
             mean = [3.01510344e+02,   1.74340204e+00,   2.23128506e-02]
@@ -132,22 +141,7 @@ class PLKLikelihood(WangWangCMB):
             cov  = [[1.0,   0.52,  -0.41],
                     [0.52,  1.0,   -0.72],
                     [-0.41, -0.72,  1.0]]
-        else:
-            print("Bad matrices param")
-            sys.exit(1)
 
-        WangWangCMB.__init__(self, "CMB_WW_"+matrices, mean, err, cov)
-
-class WMAPLikelihood(WangWangCMB):
-    def __init__(self, matrices='PLA'):
-        if matrices == "WMAP9":
-            # arXiv:1304.4514 (WMAP9 see Eq~14 and 15)
-            mean = [302.02, 1.7327, 0.02260]
-            err = [0.66, 0.0164, 0.00053]
-            cov = [[1.0, 0.3883, -0.6089],
-                   [0.3883, 1.0, -0.5239],
-                   [-0.6089, -0.5239,  1.0]]
-            
         elif matrices == "PLA":
             mean = [3.01969812e+02,   1.73081611e+00,   2.26651563e-02]
             err = [6.61780337e-01,   1.60432146e-02,   5.18589026e-04]
@@ -155,7 +149,7 @@ class WMAPLikelihood(WangWangCMB):
                    [0.37679434, 1., -0.51194784],
                    [-0.61134328, -0.51194784, 1.]]
         else:
-            print("Basd mtrices param")
+            print("Bad matrices param")
             sys.exit(1)
 
-        WangWangCMB.__init__(self, "CMB_WW_WMAP9", mean, err, cov)
+        WangWangCMB.__init__(self, "CMB_WW_"+matrices, mean, err, cov)
