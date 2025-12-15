@@ -40,7 +40,8 @@ from .likelihoods.LikelihoodMultiplier import LikelihoodMultiplier
 from .likelihoods.BAOLikelihoods import DR11LOWZ, DR11CMASS, DR14LyaAuto, DR14LyaCross, \
                                         SixdFGS, SDSSMGS, DR11LyaAuto, DR11LyaCross, eBOSS, \
                                         DR12Consensus, DR16BAO, DESIBAO, DESIDR2BAO
-from .likelihoods.SimpleCMBLikelihood import PLK, PLK15, PLK18, WMAP9
+from .likelihoods.SimpleCMBLikelihood import PlanckLikelihood, PlanckLikelihood_15, PlanckLikelihood_18, WMAP9Likelihood, CamSpec
+from .likelihoods.WangWangCMB import PLKLikelihood
 from .likelihoods.CompressedSNLikelihood import BetouleSN, UnionSN
 from .likelihoods.SNLikelihood import JLASN_Full
 from .likelihoods.PantheonSNLikelihood import PantheonSN, BinnedPantheon
@@ -282,26 +283,18 @@ def ParseDataset(datasets, **kwargs):
             L.addLikelihood(DESIBAO())
         elif name == 'DESIDR2':
             L.addLikelihood(DESIDR2BAO())
-        elif name == 'PLK':
-            L.addLikelihood(PLK())
-        elif name == 'PLK15':
-            L.addLikelihood(PLK15())
-        elif name == 'PLK18':
-            L.addLikelihood(PLK18())
-        elif name == 'PLKW':
-            from .likelihoods.WangWangCMB import PlanckLikelihood
+        elif name == 'WMAP':
+            L.addLikelihood(WMAP9Likelihood())
+        elif name == 'Planck':
             L.addLikelihood(PlanckLikelihood())
-        elif name == 'WMAP9':
-            L.addLikelihood(WMAP9())
-        elif name == 'PlRd':
-            L.addLikelihood(PLK(kill_Da=True))
-        elif name == 'WRd':
-            L.addLikelihood(WMAP9(kill_Da=True))
-        elif name == 'PlDa':
-            L.addLikelihood(PLK(kill_rd=True))
-        elif name == 'PlRdx10':
-            L.addLikelihood(LikelihoodMultiplier(
-                PLK(kill_Da=True), 100.0))
+        elif name == 'Planck_15':
+            L.addLikelihood(PlanckLikelihood_15())
+        elif name == 'Planck_18':
+            L.addLikelihood(PlanckLikelihood_18())
+        elif name == 'Planck_PR4':
+            L.addLikelihood(CamSpec())
+        elif name == 'PLK18':
+            L.addLikelihood(PLKLikelihood())
         elif name == 'Pantheon':
             L.addLikelihood(PantheonSN())
         elif name == 'BPantheon':
