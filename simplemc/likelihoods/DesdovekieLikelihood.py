@@ -65,4 +65,4 @@ class Desdovekie(DesdovekieLikelihood):
     """
     def __init__(self):
         DesdovekieLikelihood.__init__(self, "Desdovekie", cdir + "/data/DES-Dovekie_HD.csv",
-                                        cdir + "/data/STAT+SYS.npz")
+                                        cdir + "/data/covtot_inv_000.npz")
