@@ -118,15 +118,12 @@ class LCDMCosmology(BaseCosmology, RadiationAndNeutrinos):
                 self.Obh2, self.Ocb*self.h**2, self.Omnuh2, Nnu))
         return True
 
-
     # this is relative hsquared as a function of a
     ## i.e. H(z)^2/H(z=0)^2
     # @autojit
     def RHSquared_a(self, a):
         NuContrib = self.NuDensity.rho(a)/self.h**2
         return (self.Ocb/a**3+self.Omrad/a**4+NuContrib+(1.0-self.Om))
-
-
 
     # Obh2 prior
     def prior_loglike(self):
@@ -139,7 +136,6 @@ class LCDMCosmology(BaseCosmology, RadiationAndNeutrinos):
             return -(self.Obh2-0.02202)**2/(2*0.00046**2)
         #return 0
 
-
     # this returns the Wang+Wang variables in a vec
     def WangWangVec(self):
         Omh2   = self.Ocb*self.h**2+self.Omnuh2
@@ -151,10 +147,22 @@ class LCDMCosmology(BaseCosmology, RadiationAndNeutrinos):
         # print la, R, self.Obh2
         return sp.array([la, R, self.Obh2])
 
-
     # this returns the "SimpleCMB" variables in a vec
     def CMBSimpleVec(self):
         Ocbh2  = self.Ocb*self.h**2
         zstar  = 1090
         Dastar = self.Da_z(zstar)*self.c_/(self.h*100)
         return sp.array([self.Obh2, Ocbh2, Dastar/self.rd])
+        
+    # -------------------------------------------------------
+    # CMB vector: [theta_star, omega_b, omega_bc]
+    # -------------------------------------------------------
+    #def CMBSimpleVec(self):
+    #    zstar = 1090.0
+    #    omega_b  = self.Obh2
+    #    omega_bc = (self.Ocb) * self.h**2
+    #    # Angular diameter distance
+    #    DA = self.Da_z(zstar) * self.c_ / (self.h * 100)
+    #    # Acoustic angular scale
+    #    theta_star = self.rd / DA
+    #    return np.array([theta_star, omega_b, omega_bc])
