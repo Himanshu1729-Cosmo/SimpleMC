@@ -29,7 +29,7 @@ You can install simplemc on your computer using:
      
      $ cd SimpleMC
      
-     $ pip3 install -e .
+     $ pip3 install -e . or pip install .
 
 then you can delete the cloned repo because you must have `simplemc` installed locally. 
 
