@@ -86,26 +86,6 @@ class PlanckLikelihood_18(SimpleCMBLikelihood):
         name = "Planck_18"
         SimpleCMBLikelihood.__init__(self,name,mean,cov, kill_Da, kill_rd)
         
-#arXiv:2503.14738 (see Appendix A (Eq~A1 and A2) Here we have converted the acoustic angular scale ($\theta_*$) into the quantity ($D_M/r_d$), since SimpleMC uses ($D_M/r_d$) instead of ($\theta_*$).)
-class CamSpec(SimpleCMBLikelihood):
-    def __init__(self, kill_Da= False, kill_rd= False):
-        mean = np.array([2.22300000e-02, 1.42080000e-01, 9.45244957e+01])
-        cov = np.array([[2.13440000e-08, -9.40010000e-08, -1.12993547e-06],
-                        [-9.40010000e-08, 1.48840000e-06, 1.08317263e-05],
-                        [-1.12993547e-06, 1.08317263e-05, 5.45897200e-04]])
-        name = "PLKPR4"
-        SimpleCMBLikelihood.__init__(self,name,mean,cov, kill_Da, kill_rd)
-
-#arXiv:2503.14738 (see Appendix~A, Eqs.~(A1) and (A2)). Please do not forget to modify the $\Lambda$CDM class to define $\theta_\star$ there.
-class CamSpec(SimpleCMBLikelihood):
-    def __init__(self, kill_Da= False, kill_rd= False):
-        mean = np.array([0.01041, 0.02223, 0.14208])
-        cov = 1e-9 * np.array([[0.006621, 0.12444, -1.1929 ],
-                               [0.12444, 21.344, -94.001],
-                               [-1.1929, -94.001, 1488.4]])
-        name = "Planck_PR4"
-        SimpleCMBLikelihood.__init__(self,name,mean,cov, kill_Da, kill_rd)   
-        
 if __name__ == "__main__":
     D = PlanckLikelihood()
     for v in D.mean:
