@@ -153,16 +153,3 @@ class LCDMCosmology(BaseCosmology, RadiationAndNeutrinos):
         zstar  = 1090
         Dastar = self.Da_z(zstar)*self.c_/(self.h*100)
         return sp.array([self.Obh2, Ocbh2, Dastar/self.rd])
-        
-    # -------------------------------------------------------
-    # CMB vector: [theta_star, omega_b, omega_bc]
-    # -------------------------------------------------------
-    #def CMBSimpleVec(self):
-    #    zstar = 1090.0
-    #    omega_b  = self.Obh2
-    #    omega_bc = (self.Ocb) * self.h**2
-    #    # Angular diameter distance
-    #    DA = self.Da_z(zstar) * self.c_ / (self.h * 100)
-    #    # Acoustic angular scale
-    #    theta_star = self.rd / DA
-    #    return np.array([theta_star, omega_b, omega_bc])
