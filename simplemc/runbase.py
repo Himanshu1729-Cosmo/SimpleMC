@@ -40,7 +40,7 @@ from .likelihoods.LikelihoodMultiplier import LikelihoodMultiplier
 from .likelihoods.BAOLikelihoods import DR11LOWZ, DR11CMASS, DR14LyaAuto, DR14LyaCross, \
                                         SixdFGS, SDSSMGS, DR11LyaAuto, DR11LyaCross, eBOSS, \
                                         DR12Consensus, DR16BAO, DESIBAO, DESIDR2BAO
-from .likelihoods.SimpleCMBLikelihood import PlanckLikelihood, PlanckLikelihood_15, PlanckLikelihood_18, WMAP9Likelihood, CamSpec
+from .likelihoods.SimpleCMBLikelihood import PlanckLikelihood, PlanckLikelihood_15, PlanckLikelihood_18, WMAP9Likelihood
 from .likelihoods.WangWangCMB import PLKLikelihood
 from .likelihoods.CompressedSNLikelihood import BetouleSN, UnionSN
 from .likelihoods.SNLikelihood import JLASN_Full
@@ -290,10 +290,6 @@ def ParseDataset(datasets, **kwargs):
             L.addLikelihood(PlanckLikelihood_15())
         elif name == 'Planck_18':
             L.addLikelihood(PlanckLikelihood_18())
-        elif name == 'Planck_PR4':
-            L.addLikelihood(CamSpec())
-        elif name == 'PLK18':
-            L.addLikelihood(PLKLikelihood())
         elif name == 'Pantheon':
             L.addLikelihood(PantheonSN())
         elif name == 'BPantheon':
