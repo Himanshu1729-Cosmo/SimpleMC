@@ -1,1082 +1,1242 @@
 #!/usr/bin/env python
 # -*- coding: utf-8 -*-
 
-
-#TODO when too many parameters, dont print all values.
+"""
+Functions for proposing new live points used by
+:class:`~dynesty.sampler.Sampler` (and its children from
+:mod:`~dynesty.nestedsamplers`) and
+:class:`~dynesty.dynamicsampler.DynamicSampler`.
 
 """
-The base `Sampler` class containing various helpful functions. All other
-samplers inherit this class either explicitly or implicitly.
 
-Modified for SimpleMC use by I Gomez-Vargas (igomezv0701@alumno.ipn.mx)
-Date: June 2020
-"""
-from simplemc.cosmo.Derivedparam import AllDerived
+from __future__ import (print_function, division)
 from six.moves import range
 
-import sys
 import warnings
-from functools import partial
 import math
-import copy
 import numpy as np
-try:
-    from scipy.special import logsumexp
-except ImportError:
-    from scipy.misc import logsumexp
+from numpy import linalg
 
-from .results import Results, print_fn
-from .bounding import UnitCube
-from .sampling import sample_unif
-import sys
+from .utils import unitcheck, reflect
 
-__all__ = ["Sampler"]
 
+__all__ = ["sample_unif", "sample_rwalk", "sample_rstagger",
+           "sample_slice", "sample_rslice", "sample_hslice"]
+
+EPS = float(np.finfo(np.float64).eps)
 SQRTEPS = math.sqrt(float(np.finfo(np.float64).eps))
-MAXINT = 2**32 - 1
 
 
-class Sampler(object):
+def sample_unif(args):
     """
-    The basic sampler object that performs the actual nested sampling.
+    Evaluate a new point sampled uniformly from a bounding proposal
+    distribution. Parameters are zipped within `args` to utilize
+    `pool.map`-style functions.
 
     Parameters
     ----------
-    loglikelihood : function
-        Function returning ln(likelihood) given parameters as a 1-d `~numpy`
-        array of length `ndim`.
+    u : `~numpy.ndarray` with shape (npdim,)
+        Position of the initial sample.
+
+    loglstar : float
+        Ln(likelihood) bound. **Not applicable here.**
+
+    axes : `~numpy.ndarray` with shape (ndim, ndim)
+        Axes used to propose new points. **Not applicable here.**
+
+    scale : float
+        Value used to scale the provided axes. **Not applicable here.**
 
     prior_transform : function
         Function transforming a sample from the a unit cube to the parameter
         space of interest according to the prior.
 
-    npdim : int, optional
-        Number of parameters accepted by `prior_transform`.
+    loglikelihood : function
+        Function returning ln(likelihood) given parameters as a 1-d `~numpy`
+        array of length `ndim`.
 
-    live_points : list of 3 `~numpy.ndarray` each with shape (nlive, ndim)
-        Initial set of "live" points. Contains `live_u`, the coordinates
-        on the unit cube, `live_v`, the transformed variables, and
-        `live_logl`, the associated loglikelihoods.
+    kwargs : dict
+        A dictionary of additional method-specific parameters.
+        **Not applicable here.**
 
-    update_interval : int
-        Only update the bounding distribution every `update_interval`-th
-        likelihood call.
+    Returns
+    -------
+    u : `~numpy.ndarray` with shape (npdim,)
+        Position of the final proposed point within the unit cube. **For
+        uniform sampling this is the same as the initial input position.**
 
-    first_update : dict
-        A dictionary containing parameters governing when the sampler should
-        first update the bounding distribution from the unit cube to the one
-        specified by the user.
+    v : `~numpy.ndarray` with shape (ndim,)
+        Position of the final proposed point in the target parameter space.
 
-    rstate : `~numpy.random.RandomState`
-        `~numpy.random.RandomState` instance.
+    logl : float
+        Ln(likelihood) of the final proposed point.
 
-    queue_size: int
-        Carry out likelihood evaluations in parallel by queueing up new live
-        point proposals using (at most) this many threads/members.
+    nc : int
+        Number of function calls used to generate the sample. For uniform
+        sampling this is `1` by construction.
 
-    pool: pool
-        Use this pool of workers to execute operations in parallel.
-
-    use_pool : dict, optional
-        A dictionary containing flags indicating where the provided `pool`
-        should be used to execute operations in parallel.
+    blob : dict
+        Collection of ancillary quantities used to tune :data:`scale`. **Not
+        applicable for uniform sampling.**
 
     """
 
-    def __init__(self, loglikelihood, prior_transform, npdim, live_points,
-                 update_interval, first_update, rstate,
-                 queue_size, pool, use_pool):
-        #jav
-        #self.print_txt = "\rit: {} | ncall: {} | eff: {:.3f} | logz: {:.4f} | " \
-        #                 "dlogz: {:.4f} | loglstar: {:.4f} "
+    # Unzipping.
+    (u, loglstar, axes, scale,
+     prior_transform, loglikelihood, kwargs) = args
 
-        self.print_txt = "\rit: {} | ncall: {} | eff: {:.3f} | logz: {:.4f} | " \
-                         "dlogz: {:.4f} | loglstar: {:.4f} | point {}"
+    # Evaluate.
+    v = prior_transform(np.array(u))
+    logl = loglikelihood(np.array(v))
+    nc = 1
+    blob = None
 
-        # distributions
-        self.loglikelihood_control = loglikelihood
-        self.loglikelihood = loglikelihood
-        self.prior_transform = prior_transform
-        self.npdim = npdim
+    return u, v, logl, nc, blob
 
-        # live points
-        self.live_u, self.live_v, self.live_logl = live_points
-        self.nlive = len(self.live_u)
-        self.live_bound = np.zeros(self.nlive, dtype='int')
-        self.live_it = np.zeros(self.nlive, dtype='int')
 
-        # bounding updates
-        self.update_interval = update_interval
-        self.ubound_ncall = first_update.get('min_ncall', 2 * self.nlive)
-        self.ubound_eff = first_update.get('min_eff', 10.)
-        self.logl_first_update = None
+def sample_rwalk(args):
+    """
+    Return a new live point proposed by random walking away from an
+    existing live point.
 
-        # random state
-        self.rstate = rstate
+    Parameters
+    ----------
+    u : `~numpy.ndarray` with shape (npdim,)
+        Position of the initial sample. **This is a copy of an existing live
+        point.**
 
-        # parallelism
-        self.pool = pool  # provided pool
-        if self.pool is None:
-            self.M = map
-        else:
-            self.M = pool.map
+    loglstar : float
+        Ln(likelihood) bound.
 
-        self.use_pool = use_pool  # provided flags for when to use the pool
-        self.use_pool_ptform = use_pool.get('prior_transform', True)
-        self.use_pool_logl = use_pool.get('loglikelihood', True)
-        self.use_pool_evolve = use_pool.get('propose_point', True)
-        self.use_pool_update = use_pool.get('update_bound', True)
-        if self.use_pool_evolve:
-            self.queue_size = queue_size  # size of the queue
-        else:
-            self.queue_size = 1
-        self.queue = []  # proposed live point queue
-        self.nqueue = 0  # current size of the queue
-        self.unused = 0  # total number of proposals unused
-        self.used = 0  # total number of proposals used
+    axes : `~numpy.ndarray` with shape (ndim, ndim)
+        Axes used to propose new points. For random walks new positions are
+        proposed using the :class:`~dynesty.bounding.Ellipsoid` whose
+        shape is defined by axes.
 
-        # sampling
-        self.it = 1  # current iteration
-        self.since_update = 0  # number of calls since the last update
-        self.ncall = self.nlive  # number of function calls
-        self.dlv = math.log((self.nlive + 1.) / self.nlive)  # shrinkage/iter
-        self.bound = [UnitCube(self.npdim)]  # bounding distributions
-        self.nbound = 1  # total number of unique bounding distributions
-        self.added_live = False  # whether leftover live points were used
-        self.eff = 0.  # overall sampling efficiency
+    scale : float
+        Value used to scale the provided axes.
 
-        # results
-        self.saved_id = []  # live point labels
-        self.saved_u = []  # unit cube samples
-        self.saved_v = []  # transformed variable samples
-        self.saved_logl = []  # loglikelihoods of samples
-        self.saved_logvol = []  # expected ln(volume)
-        self.saved_logwt = []  # ln(weights)
-        self.saved_logz = []  # cumulative ln(evidence)
-        self.saved_logzvar = []  # cumulative error on ln(evidence)
-        self.saved_h = []  # cumulative information
-        self.saved_nc = []  # number of calls at each iteration
-        self.saved_boundidx = []  # index of bound dead point was drawn from
-        self.saved_it = []  # iteration the live (now dead) point was proposed
-        self.saved_bounditer = []  # active bound at a specific iteration
-        self.saved_scale = []  # scale factor at each iteration
+    prior_transform : function
+        Function transforming a sample from the a unit cube to the parameter
+        space of interest according to the prior.
 
-    def __getstate__(self):
-        """Get state information for pickling."""
+    loglikelihood : function
+        Function returning ln(likelihood) given parameters as a 1-d `~numpy`
+        array of length `ndim`.
 
-        state = self.__dict__.copy()
+    kwargs : dict
+        A dictionary of additional method-specific parameters.
 
-        del state['rstate']  # remove random module
+    Returns
+    -------
+    u : `~numpy.ndarray` with shape (npdim,)
+        Position of the final proposed point within the unit cube.
 
-        # deal with pool
-        if state['pool'] is not None:
-            del state['pool']  # remove pool
-            del state['M']  # remove `pool.map` function hook
+    v : `~numpy.ndarray` with shape (ndim,)
+        Position of the final proposed point in the target parameter space.
 
-        return state
+    logl : float
+        Ln(likelihood) of the final proposed point.
 
-    def reset(self):
-        """Re-initialize the sampler."""
+    nc : int
+        Number of function calls used to generate the sample.
 
-        # live points
-        self.live_u = self.rstate.rand(self.nlive, self.npdim)
-        if self.use_pool_ptform:
-            # Use the pool to compute the prior transform.
-            self.live_v = np.array(list(self.M(self.prior_transform,
-                                        np.array(self.live_u))))
-        else:
-            # Compute the prior transform using the default `map` function.
-            self.live_v = np.array(list(map(self.prior_transform,
-                                            np.array(self.live_u))))
-        if self.use_pool_logl:
-            # Use the pool to compute the log-likelihoods.
-            self.live_logl = np.array(list(self.M(self.loglikelihood,
-                                                  np.array(self.live_v))))
-        else:
-            # Compute the log-likelihoods using the default `map` function.
-            self.live_logl = np.array(list(map(self.loglikelihood,
-                                               np.array(self.live_v))))
-        self.live_bound = np.zeros(self.nlive, dtype='int')
-        self.live_it = np.zeros(self.nlive, dtype='int')
+    blob : dict
+        Collection of ancillary quantities used to tune :data:`scale`.
 
-        # parallelism
-        self.queue = []
-        self.nqueue = 0
-        self.unused = 0
-        self.used = 0
+    """
 
-        # sampling
-        self.it = 1
-        self.since_update = 0
-        self.ncall = self.nlive
-        self.bound = [UnitCube(self.npdim)]
-        self.nbound = 1
-        self.added_live = False
+    # Unzipping.
+    (u, loglstar, axes, scale,
+     prior_transform, loglikelihood, kwargs) = args
+    rstate = np.random
+    scale_init = 1.0 * scale
 
-        # results
-        self.saved_id = []
-        self.saved_u = []
-        self.saved_v = []
-        self.saved_logl = []
-        self.saved_logvol = []
-        self.saved_logwt = []
-        self.saved_logz = []
-        self.saved_logzvar = []
-        self.saved_h = []
-        self.saved_nc = []
-        self.saved_boundidx = []
-        self.saved_it = []
-        self.saved_bounditer = []
-        self.saved_scale = []
+    # Bounds
+    nonbounded = kwargs.get('nonbounded', None)
+    periodic = kwargs.get('periodic', None)
+    reflective = kwargs.get('reflective', None)
 
-    @property
-    def results(self):
-        """Saved results from the nested sampling run. If bounding
-        distributions were saved, those are also returned."""
+    # Setup.
+    n = len(u)
+    walks = kwargs.get('walks', 25)  # number of steps
+    accept = 0
+    reject = 0
+    fail = 0
+    nfail = 0
+    nc = 0
+    ncall = 0
 
-        # Add all saved samples to the results.
-        if self.save_samples:
-            with warnings.catch_warnings():
-                warnings.simplefilter("ignore")
-                results = [('nlive', self.nlive),
-                           ('niter', self.it - 1),
-                           ('ncall', np.array(self.saved_nc)),
-                           ('eff', self.eff),
-                           ('samples', np.array(self.saved_v)),
-                           ('samples_id', np.array(self.saved_id)),
-                           ('samples_it', np.array(self.saved_it)),
-                           ('samples_u', np.array(self.saved_u)),
-                           ('logwt', np.array(self.saved_logwt)),
-                           ('logl', np.array(self.saved_logl)),
-                           ('logvol', np.array(self.saved_logvol)),
-                           ('logz', np.array(self.saved_logz)),
-                           ('logzerr', np.sqrt(np.array(self.saved_logzvar))),
-                           ('information', np.array(self.saved_h))]
-        else:
-            raise ValueError("You didn't save any samples!")
-
-        # Add any saved bounds (and ancillary quantities) to the results.
-        if self.save_bounds:
-            results.append(('bound', copy.deepcopy(self.bound)))
-            results.append(('bound_iter',
-                            np.array(self.saved_bounditer, dtype='int')))
-            results.append(('samples_bound',
-                            np.array(self.saved_boundidx, dtype='int')))
-            results.append(('scale', np.array(self.saved_scale)))
-
-        return Results(results)
-
-    @property
-    def n_effective(self):
-        """
-        Estimate the effective number of posterior samples using the Kish
-        Effective Sample Size (ESS) where `ESS = sum(wts)^2 / sum(wts^2)`.
-        Note that this is `len(wts)` when `wts` are uniform and
-        `1` if there is only one non-zero element in `wts`.
-
-        """
-
-        if (len(self.saved_logwt) == 0) or (np.max(self.saved_logwt) >
-                                            0.01 * np.nan_to_num(-np.inf)):
-            # If there are no saved weights, or its -inf return 0.
-            return 0
-        else:
-            # Otherwise, compute Kish ESS.
-            logwts = np.array(self.saved_logwt)
-            logneff = logsumexp(logwts) * 2 - logsumexp(logwts * 2)
-            return np.exp(logneff)
-
-    @property
-    def citations(self):
-        """
-        Return list of papers that should be cited given the specified
-        configuration of the sampler.
-
-        """
-
-        return self.cite
-
-    def _beyond_unit_bound(self, loglstar):
-        """Check whether we should update our bound beyond the initial
-        unit cube."""
-
-        if self.logl_first_update is None:
-            # If we haven't already updated our bounds, check if we satisfy
-            # the provided criteria for establishing the first bounding update.
-            check = (self.ncall > self.ubound_ncall and
-                     self.eff < self.ubound_eff)
-            if check:
-                # Save the log-likelihood where our first update took place.
-                self.logl_first_update = loglstar
-            return check
-        else:
-            # If we've already update our bounds, check if we've exceeded the
-            # saved log-likelihood threshold. (This is useful when sampling
-            # within `dynamicsampler`).
-            return loglstar >= self.logl_first_update
-
-    def _empty_queue(self):
-        """Dump all live point proposals currently on the queue."""
-
+    drhat, dr, du, u_prop, logl_prop = np.nan, np.nan, np.nan, np.nan, np.nan
+    while nc < walks or accept == 0:
         while True:
-            try:
-                # Remove unused points from the queue.
-                self.queue.pop()
-                self.unused += 1  # add to the total number of unused points
-                self.nqueue -= 1
-            except:
-                # If the queue is empty, we're done!
-                self.nqueue = 0
+
+            # Check scale-factor. If we've shrunk too much, terminate.
+            if scale < 1e-5 * scale_init:
+                raise RuntimeError("Random walk sampling appears to be stuck! "
+                                   "Some useful output quantities:\n"
+                                   "u: {0}\n"
+                                   "drhat: {1}\n"
+                                   "dr: {2}\n"
+                                   "du: {3}\n"
+                                   "u_prop: {4}\n"
+                                   "loglstar: {5}\n"
+                                   "logl_prop: {6}\n"
+                                   "axes: {7}\n"
+                                   "scale: {8}."
+                                   .format(u, drhat, dr, du, u_prop,
+                                           loglstar, logl_prop, axes, scale))
+
+            # Propose a direction on the unit n-sphere.
+            drhat = rstate.randn(n)
+            drhat /= linalg.norm(drhat)
+
+            # Scale based on dimensionality.
+            dr = drhat * rstate.rand()**(1./n)
+
+            # Transform to proposal distribution.
+            du = np.dot(axes, dr)
+            u_prop = u + scale * du
+
+            # Wrap periodic parameters
+            if periodic is not None:
+                u_prop[periodic] = np.mod(u_prop[periodic], 1)
+            # Reflect
+            if reflective is not None:
+                u_prop[reflective] = reflect(u_prop[reflective])
+
+            # Check unit cube constraints.
+            if unitcheck(u_prop, nonbounded):
                 break
-
-    def _fill_queue(self, loglstar):
-        """Sequentially add new live point proposals to the queue."""
-
-        # Add/zip arguments to submit to the queue.
-        point_queue = []
-        axes_queue = []
-        while self.nqueue < self.queue_size:
-            if self._beyond_unit_bound(loglstar):
-                # Propose points using the provided sampling/bounding options.
-                point, axes = self.propose_point()
-                evolve_point = self.evolve_point
             else:
-                # Propose/evaluate points directly from the unit cube.
-                point = self.rstate.rand(self.npdim)
-                axes = np.identity(self.npdim)
-                evolve_point = sample_unif
-            point_queue.append(point)
-            axes_queue.append(axes)
-            self.nqueue += 1
-        loglstars = [loglstar for i in range(self.queue_size)]
-        scales = [self.scale for i in range(self.queue_size)]
-        ptforms = [self.prior_transform for i in range(self.queue_size)]
-        logls = [self.loglikelihood for i in range(self.queue_size)]
-        kwargs = [self.kwargs for i in range(self.queue_size)]
-        args = zip(point_queue, loglstars, axes_queue,
-                   scales, ptforms, logls, kwargs)
+                fail += 1
+                nfail += 1
 
-        if self.use_pool_evolve:
-            # Use the pool to propose ("evolve") a new live point.
-            self.queue = list(self.M(evolve_point, args))
+            # Check if we're stuck generating bad numbers.
+            if fail > 100 * walks:
+                warnings.warn("Random number generation appears to be "
+                              "extremely inefficient. Adjusting the "
+                              "scale-factor accordingly.")
+                fail = 0
+                scale *= math.exp(-1. / n)
+
+        # Check proposed point.
+        v_prop = prior_transform(np.array(u_prop))
+        logl_prop = loglikelihood(np.array(v_prop))
+        if logl_prop >= loglstar:
+            u = u_prop
+            v = v_prop
+            logl = logl_prop
+            accept += 1
         else:
-            # Propose ("evolve") a new live point using the default `map`
-            # function.
-            self.queue = list(map(evolve_point, (args)))
+            reject += 1
+        nc += 1
+        ncall += 1
 
-    def _get_point_value(self, loglstar):
-        """Grab the first live point proposal in the queue."""
+        # Check if we're stuck generating bad points.
+        if nc > 50 * walks:
+            scale *= math.exp(-1. / n)
+            warnings.warn("Random walk proposals appear to be "
+                          "extremely inefficient. Adjusting the "
+                          "scale-factor accordingly.")
+            nc, accept, reject = 0, 0, 0  # reset values
 
-        # If the queue is empty, refill it.
-        if self.nqueue <= 0:
-            self._fill_queue(loglstar)
+    blob = {'accept': accept, 'reject': reject, 'fail': nfail, 'scale': scale}
 
-        # Grab the earliest entry.
-        u, v, logl, nc, blob = self.queue.pop(0)
-        self.used += 1  # add to the total number of used points
-        self.nqueue -= 1
+    return u, v, logl, ncall, blob
 
-        return u, v, logl, nc, blob
 
-    def _new_point(self, loglstar, logvol):
-        """Propose points until a new point that satisfies the log-likelihood
-        constraint `loglstar` is found."""
+def sample_rstagger(args):
+    """
+    Return a new live point proposed by random "staggering" away from an
+    existing live point. The difference between this and the random walk is
+    the step size is exponentially adjusted to reach a target acceptance rate
+    *during* each proposal (in addition to *between* proposals).
 
-        ncall, nupdate = 0, 0
+    Parameters
+    ----------
+    u : `~numpy.ndarray` with shape (npdim,)
+        Position of the initial sample. **This is a copy of an existing live
+        point.**
+
+    loglstar : float
+        Ln(likelihood) bound.
+
+    axes : `~numpy.ndarray` with shape (ndim, ndim)
+        Axes used to propose new points. For random walks new positions are
+        proposed using the :class:`~dynesty.bounding.Ellipsoid` whose
+        shape is defined by axes.
+
+    scale : float
+        Value used to scale the provided axes.
+
+    prior_transform : function
+        Function transforming a sample from the a unit cube to the parameter
+        space of interest according to the prior.
+
+    loglikelihood : function
+        Function returning ln(likelihood) given parameters as a 1-d `~numpy`
+        array of length `ndim`.
+
+    kwargs : dict
+        A dictionary of additional method-specific parameters.
+
+    Returns
+    -------
+    u : `~numpy.ndarray` with shape (npdim,)
+        Position of the final proposed point within the unit cube.
+
+    v : `~numpy.ndarray` with shape (ndim,)
+        Position of the final proposed point in the target parameter space.
+
+    logl : float
+        Ln(likelihood) of the final proposed point.
+
+    nc : int
+        Number of function calls used to generate the sample.
+
+    blob : dict
+        Collection of ancillary quantities used to tune :data:`scale`.
+
+    """
+
+    # Unzipping.
+    (u, loglstar, axes, scale,
+     prior_transform, loglikelihood, kwargs) = args
+    rstate = np.random
+    scale_init = 1.0 * scale
+
+    # Periodicity.
+    nonbounded = kwargs.get('nonbounded', None)
+    periodic = kwargs.get('periodic', None)
+    reflective = kwargs.get('reflective', None)
+
+    # Setup.
+    n = len(u)
+    walks = kwargs.get('walks', 25)  # number of steps
+    facc_target = kwargs.get('facc', 0.5)  # acceptance fraction
+    accept = 0
+    reject = 0
+    fail = 0
+    nfail = 0
+    nc = 0
+    ncall = 0
+    stagger = 1.  # adaptive scale
+
+    drhat, dr, du, u_prop, logl_prop = np.nan, np.nan, np.nan, np.nan, np.nan
+    while nc < walks or accept == 0:
         while True:
-            # Get the next point from the queue
-            u, v, logl, nc, blob = self._get_point_value(loglstar)
-            ncall += nc
 
-            # Bounding checks.
-            ucheck = ncall >= self.update_interval * (1 + nupdate)
-            bcheck = self._beyond_unit_bound(loglstar)
+            # Check scale-factor. If we've shrunk too much, terminate.
+            if scale < 1e-5 * scale_init:
+                raise RuntimeError("Random walk sampling appears to be stuck! "
+                                   "Some useful output quantities:\n"
+                                   "u: {0}\n"
+                                   "drhat: {1}\n"
+                                   "dr: {2}\n"
+                                   "du: {3}\n"
+                                   "u_prop: {4}\n"
+                                   "loglstar: {5}\n"
+                                   "logl_prop: {6}\n"
+                                   "axes: {7}\n"
+                                   "scale: {8}."
+                                   .format(u, drhat, dr, du, u_prop,
+                                           loglstar, logl_prop, axes, scale))
 
-            # If our queue is empty, update any tuning parameters associated
-            # with our proposal (sampling) method.
-            if blob is not None and self.nqueue <= 0 and bcheck:
-                self.update_proposal(blob)
+            # Propose a direction on the unit n-sphere.
+            drhat = rstate.randn(n)
+            drhat /= linalg.norm(drhat)
 
-            # If we satisfy the log-likelihood constraint, we're done!
-            if logl >= loglstar:
+            # Scale based on dimensionality.
+            dr = drhat * rstate.rand()**(1./n)
+
+            # Transform to proposal distribution.
+            du = np.dot(axes, dr)
+            u_prop = u + scale * stagger * du
+
+            # Wrap periodic parameters
+            if periodic is not None:
+                u_prop[periodic] = np.mod(u_prop[periodic], 1)
+            # Reflect
+            if reflective is not None:
+                u_prop[reflective] = reflect(u_prop[reflective])
+
+            # Check unit cube constraints.
+            if unitcheck(u_prop, nonbounded):
                 break
-
-            # If there has been more than `update_interval` function calls
-            # made *and* we satisfy the criteria for moving beyond sampling
-            # from the unit cube, update the bound.
-            if ucheck and bcheck:
-                pointvol = math.exp(logvol) / self.nlive
-                bound = self.update(pointvol)
-                if self.save_bounds:
-                    self.bound.append(bound)
-                self.nbound += 1
-                nupdate += 1
-                self.since_update = -ncall  # ncall will be added back later
-
-        return u, v, logl, ncall
-
-    def add_live_points(self):
-        """Add the remaining set of live points to the current set of dead
-        points. Instantiates a generator that will be called by
-        the user. Returns the same outputs as :meth:`sample`."""
-
-        # Check if the remaining live points have already been added
-        # to the output set of samples.
-        if self.added_live:
-            raise ValueError("The remaining live points have already "
-                             "been added to the list of samples!")
-        else:
-            self.added_live = True
-
-        # After N samples have been taken out, the remaining volume is
-        # `e^(-N / nlive)`. The remaining points are distributed uniformly
-        # within the remaining volume so that the expected volume enclosed
-        # by the `i`-th worst likelihood is
-        # `e^(-N / nlive) * (nlive + 1 - i) / (nlive + 1)`.
-        logvols = self.saved_logvol[-1]
-        logvols += np.log(1. - (np.arange(self.nlive)+1.) / (self.nlive+1.))
-        logvols_pad = np.concatenate(([self.saved_logvol[-1]], logvols))
-        logdvols = logsumexp(a=np.c_[logvols_pad[:-1], logvols_pad[1:]],
-                             axis=1, b=np.c_[np.ones(self.nlive),
-                                             -np.ones(self.nlive)])
-        logdvols += math.log(0.5)
-
-        # Defining change in `logvol` used in `logzvar` approximation.
-        dlvs = logvols_pad[:-1] - logvols_pad[1:]
-
-        # Sorting remaining live points.
-        lsort_idx = np.argsort(self.live_logl)
-        loglmax = max(self.live_logl)
-
-        # Grabbing relevant values from the last dead point.
-        logz = self.saved_logz[-1]
-        logzvar = self.saved_logzvar[-1]
-        h = self.saved_h[-1]
-        loglstar = self.saved_logl[-1]
-        if self._beyond_unit_bound(loglstar):
-            bounditer = self.nbound - 1
-        else:
-            bounditer = 0
-
-        # Add contributions from the remaining live points in order
-        # from the lowest to the highest log-likelihoods.
-        for i in range(self.nlive):
-
-            # Grab live point with `i`-th lowest log-likelihood along with
-            # ancillary quantities.
-            idx = lsort_idx[i]
-            logvol, logdvol, dlv = logvols[i], logdvols[i], dlvs[i]
-            ustar = np.array(self.live_u[idx])
-            vstar = np.array(self.live_v[idx])
-            loglstar_new = self.live_logl[idx]
-            boundidx = self.live_bound[idx]
-            point_it = self.live_it[idx]
-
-            # Compute relative contribution to results.
-            logwt = np.logaddexp(loglstar_new, loglstar) + logdvol  # weight
-            logz_new = np.logaddexp(logz, logwt)  # ln(evidence)
-            lzterm = (math.exp(loglstar - logz_new) * loglstar +
-                      math.exp(loglstar_new - logz_new) * loglstar_new)
-            h_new = (math.exp(logdvol) * lzterm +
-                     math.exp(logz - logz_new) * (h + logz) -
-                     logz_new)  # information
-            dh = h_new - h
-            h = h_new
-            logz = logz_new
-            logzvar += 2. * dh * dlv  # var[ln(evidence)] estimate
-            loglstar = loglstar_new
-            logz_remain = loglmax + logvol  # remaining ln(evidence)
-            delta_logz = np.logaddexp(logz, logz_remain) - logz  # dlogz
-
-            # Save results.
-            if self.save_samples:
-                self.saved_id.append(idx)
-                self.saved_u.append(ustar)
-                self.saved_v.append(vstar)
-                self.saved_logl.append(loglstar)
-                self.saved_logvol.append(logvol)
-                self.saved_logwt.append(logwt)
-                self.saved_logz.append(logz)
-                self.saved_logzvar.append(logzvar)
-                self.saved_h.append(h)
-                self.saved_nc.append(1)
-                self.saved_boundidx.append(boundidx)
-                self.saved_it.append(point_it)
-                self.saved_bounditer.append(bounditer)
-                self.saved_scale.append(self.scale)
-            self.eff = 100. * (self.it + i) / self.ncall  # efficiency
-
-            # Return our new "dead" point and ancillary quantities.
-            yield (idx, ustar, vstar, loglstar, logvol, logwt,
-                   logz, logzvar, h, 1, point_it, boundidx, bounditer,
-                   self.eff, delta_logz)
-
-    def _remove_live_points(self):
-        """Remove the final set of live points if they were
-        previously added to the current set of dead points."""
-
-        if self.added_live:
-            self.added_live = False
-            if self.save_samples:
-                del self.saved_id[-self.nlive:]
-                del self.saved_u[-self.nlive:]
-                del self.saved_v[-self.nlive:]
-                del self.saved_logl[-self.nlive:]
-                del self.saved_logvol[-self.nlive:]
-                del self.saved_logwt[-self.nlive:]
-                del self.saved_logz[-self.nlive:]
-                del self.saved_logzvar[-self.nlive:]
-                del self.saved_h[-self.nlive:]
-                del self.saved_nc[-self.nlive:]
-                del self.saved_boundidx[-self.nlive:]
-                del self.saved_it[-self.nlive:]
-                del self.saved_bounditer[-self.nlive:]
-                del self.saved_scale[-self.nlive:]
-        else:
-            raise ValueError("No live points were added to the "
-                             "list of samples!")
-
-    def sample(self, maxiter=None, maxcall=None, dlogz=0.01,
-               logl_max=np.inf, n_effective=np.inf, add_live=True,
-               save_bounds=True, save_samples=True):
-        """
-        **The main nested sampling loop.** Iteratively replace the worst live
-        point with a sample drawn uniformly from the prior until the
-        provided stopping criteria are reached. Instantiates a generator
-        that will be called by the user.
-
-        Parameters
-        ----------
-        maxiter : int, optional
-            Maximum number of iterations. Iteration may stop earlier if the
-            termination condition is reached. Default is `sys.maxsize`
-            (no limit).
-
-        maxcall : int, optional
-            Maximum number of likelihood evaluations. Iteration may stop
-            earlier if termination condition is reached. Default is
-            `sys.maxsize` (no limit).
-
-        dlogz : float, optional
-            Iteration will stop when the estimated contribution of the
-            remaining prior volume to the total evidence falls below
-            this threshold. Explicitly, the stopping criterion is
-            `ln(z + z_est) - ln(z) < dlogz`, where `z` is the current
-            evidence from all saved samples and `z_est` is the estimated
-            contribution from the remaining volume. Default is `0.01`.
-
-        logl_max : float, optional
-            Iteration will stop when the sampled ln(likelihood) exceeds the
-            threshold set by `logl_max`. Default is no bound (`np.inf`).
-
-        n_effective: int, optional
-            Minimum number of effective posterior samples. If the estimated
-            "effective sample size" (ESS) exceeds this number,
-            sampling will terminate. Default is no ESS (`np.inf`).
-
-        add_live : bool, optional
-            Whether or not to add the remaining set of live points to
-            the list of samples when calculating `n_effective`.
-            Default is `True`.
-
-        save_bounds : bool, optional
-            Whether or not to save past distributions used to bound
-            the live points internally. Default is `True`.
-
-        save_samples : bool, optional
-            Whether or not to save past samples from the nested sampling run
-            (along with other ancillary quantities) internally.
-            Default is `True`.
-
-        Returns
-        -------
-        worst : int
-            Index of the live point with the worst likelihood. This is our
-            new dead point sample.
-
-        ustar : `~numpy.ndarray` with shape (npdim,)
-            Position of the sample.
-
-        vstar : `~numpy.ndarray` with shape (ndim,)
-            Transformed position of the sample.
-
-        loglstar : float
-            Ln(likelihood) of the sample.
-
-        logvol : float
-            Ln(prior volume) within the sample.
-
-        logwt : float
-            Ln(weight) of the sample.
-
-        logz : float
-            Cumulative ln(evidence) up to the sample (inclusive).
-
-        logzvar : float
-            Estimated cumulative variance on `logz` (inclusive).
-
-        h : float
-            Cumulative information up to the sample (inclusive).
-
-        nc : int
-            Number of likelihood calls performed before the new
-            live point was accepted.
-
-        worst_it : int
-            Iteration when the live (now dead) point was originally proposed.
-
-        boundidx : int
-            Index of the bound the dead point was originally drawn from.
-
-        bounditer : int
-            Index of the bound being used at the current iteration.
-
-        eff : float
-            The cumulative sampling efficiency (in percent).
-
-        delta_logz : float
-            The estimated remaining evidence expressed as the ln(ratio) of the
-            current evidence.
-
-        """
-
-        # Initialize quantities.
-        if maxcall is None:
-            maxcall = sys.maxsize
-        if maxiter is None:
-            maxiter = sys.maxsize
-        self.save_samples = save_samples
-        self.save_bounds = save_bounds
-        ncall = 0
-
-        # Check whether we're starting fresh or continuing a previous run.
-        if self.it == 1:
-            # Initialize values for nested sampling loop.
-            h = 0.  # information, initially *0.*
-            logz = -1.e300  # ln(evidence), initially *0.*
-            logzvar = 0.  # var[ln(evidence)], initially *0.*
-            logvol = 0.  # initially contains the whole prior (volume=1.)
-            loglstar = -1.e300  # initial ln(likelihood)
-            delta_logz = 1.e300  # ln(ratio) of total/current evidence
-
-            # Check if we should initialize a different bounding distribution
-            # instead of using the unit cube.
-            pointvol = 1. / self.nlive
-            if self._beyond_unit_bound(loglstar):
-                bound = self.update(pointvol)
-                if self.save_bounds:
-                    self.bound.append(bound)
-                    self.nbound += 1
-                self.since_update = 0
-        else:
-            # Remove live points (if added) from previous run.
-            if self.added_live:
-                self._remove_live_points()
-
-            # Get final state from previous run.
-            h = self.saved_h[-1]  # information
-            logz = self.saved_logz[-1]  # ln(evidence)
-            logzvar = self.saved_logzvar[-1]  # var[ln(evidence)]
-            logvol = self.saved_logvol[-1]  # ln(volume)
-            loglstar = min(self.live_logl)  # ln(likelihood)
-            delta_logz = np.logaddexp(logz, np.max(self.live_logl) +
-                                      logvol) - logz  # log-evidence ratio
-
-        # The main nested sampling loop.
-        for it in range(sys.maxsize):
-
-            # Stopping criterion 1: current number of iterations
-            # exceeds `maxiter`.
-            if it > maxiter:
-                # If dumping past states, save only the required quantities.
-                if not self.save_samples:
-                    self.saved_logz.append(logz)
-                    self.saved_logzvar.append(logzvar)
-                    self.saved_h.append(h)
-                    self.saved_logvol.append(logvol)
-                    self.saved_logl.append(loglstar)
-                break
-
-            # Stopping criterion 2: current number of `loglikelihood`
-            # calls exceeds `maxcall`.
-            if ncall > maxcall:
-                if not self.save_samples:
-                    self.saved_logz.append(logz)
-                    self.saved_logzvar.append(logzvar)
-                    self.saved_h.append(h)
-                    self.saved_logvol.append(logvol)
-                    self.saved_logl.append(loglstar)
-                break
-
-            # Stopping criterion 3: estimated (fractional) remaining evidence
-            # lies below some threshold set by `dlogz`.
-            logz_remain = np.max(self.live_logl) + logvol
-            delta_logz = np.logaddexp(logz, logz_remain) - logz
-            if dlogz is not None:
-                if delta_logz < dlogz:
-                    if not self.save_samples:
-                        self.saved_logz.append(logz)
-                        self.saved_logzvar.append(logzvar)
-                        self.saved_h.append(h)
-                        self.saved_logvol.append(logvol)
-                        self.saved_logl.append(loglstar)
-                    break
-
-            # Stopping criterion 4: last dead point exceeded the upper
-            # `logl_max` bound.
-            if loglstar > logl_max:
-                if not self.save_samples:
-                    self.saved_logz.append(logz)
-                    self.saved_logzvar.append(logzvar)
-                    self.saved_h.append(h)
-                    self.saved_logvol.append(logvol)
-                    self.saved_logl.append(loglstar)
-                break
-
-            # Stopping criterion 5: the number of effective posterior
-            # samples has been achieved.
-            if n_effective is not None:
-                if self.n_effective > n_effective:
-                    if add_live:
-                        self.add_final_live(print_progress=False)
-                        neff = self.n_effective
-                        self._remove_live_points()
-                        self.added_live = False
-                    else:
-                        neff = self.n_effective
-                    if neff > n_effective:
-                        if not self.save_samples:
-                            self.saved_logz.append(logz)
-                            self.saved_logzvar.append(logzvar)
-                            self.saved_h.append(h)
-                            self.saved_logvol.append(logvol)
-                            self.saved_logl.append(loglstar)
-                        break
-
-            # Expected ln(volume) shrinkage.
-            logvol -= self.dlv
-
-            # After `update_interval` interations have passed *and* we meet
-            # the criteria for moving beyond sampling from the unit cube,
-            # update the bound using the current set of live points.
-            ucheck = self.since_update >= self.update_interval
-            bcheck = self._beyond_unit_bound(loglstar)
-            if ucheck and bcheck:
-                pointvol = math.exp(logvol) / self.nlive
-                bound = self.update(pointvol)
-                if self.save_bounds:
-                    self.bound.append(bound)
-                self.nbound += 1
-                self.since_update = 0
-
-            # Locate the "live" point with the lowest `logl`.
-            worst = np.argmin(self.live_logl)  # index
-            worst_it = self.live_it[worst]  # when point was proposed
-            boundidx = self.live_bound[worst]  # associated bound index
-
-            # Set our new worst likelihood constraint.
-            ustar = np.array(self.live_u[worst])  # unit cube position
-            vstar = np.array(self.live_v[worst])  # transformed position
-            loglstar_new = self.live_logl[worst]  # new likelihood
-
-            # Set our new weight using quadratic estimates (trapezoid rule).
-            logdvol = logsumexp(a=[logvol + self.dlv, logvol],
-                                b=[0.5, -0.5])  # ln(dvol)
-            logwt = np.logaddexp(loglstar_new, loglstar) + logdvol  # ln(wt)
-
-            # Sample a new live point from within the likelihood constraint
-            # `logl > loglstar` using the bounding distribution and sampling
-            # method from our sampler.
-            u, v, logl, nc = self._new_point(loglstar_new, logvol)
-
-            ncall += nc
-            self.ncall += nc
-            self.since_update += nc
-
-            # Update evidence `logz` and information `h`.
-            logz_new = np.logaddexp(logz, logwt)
-            lzterm = (math.exp(loglstar - logz_new) * loglstar +
-                      math.exp(loglstar_new - logz_new) * loglstar_new)
-            h_new = (math.exp(logdvol) * lzterm +
-                     math.exp(logz - logz_new) * (h + logz) -
-                     logz_new)
-            dh = h_new - h
-            h = h_new
-            logz = logz_new
-            logzvar += 2. * dh * self.dlv
-            loglstar = loglstar_new
-
-            # Compute bound index at the current iteration.
-            if self._beyond_unit_bound(loglstar):
-                bounditer = self.nbound - 1
             else:
-                bounditer = 0
+                fail += 1
+                nfail += 1
 
-            # Save the worst live point. It is now a "dead" point.
-            if self.save_samples:
-                self.saved_id.append(worst)
-                self.saved_u.append(ustar)
-                self.saved_v.append(vstar)
-                self.saved_logl.append(loglstar)
-                self.saved_logvol.append(logvol)
-                self.saved_logwt.append(logwt)
-                self.saved_logz.append(logz)
-                self.saved_logzvar.append(logzvar)
-                self.saved_h.append(h)
-                self.saved_nc.append(nc)
-                self.saved_boundidx.append(boundidx)
-                self.saved_it.append(worst_it)
-                self.saved_bounditer.append(bounditer)
-                self.saved_scale.append(self.scale)
+            # Check if we're stuck generating bad numbers.
+            if fail > 100 * walks:
+                warnings.warn("Random number generation appears to be "
+                              "extremely inefficient. Adjusting the "
+                              "scale-factor accordingly.")
+                fail = 0
+                scale *= math.exp(-1. / n)
 
-            # Update the live point (previously our "worst" point).
-            self.live_u[worst] = u
-            self.live_v[worst] = v
-            self.live_logl[worst] = logl
-            self.live_bound[worst] = bounditer
-            self.live_it[worst] = self.it
-
-            # Compute our sampling efficiency.
-            self.eff = 100. * self.it / self.ncall
-
-            # Increment total number of iterations.
-            self.it += 1
-
-            # Return dead point and ancillary quantities.
-            yield (worst, ustar, vstar, loglstar, logvol, logwt,
-                   logz, logzvar, h, nc, worst_it, boundidx, bounditer,
-                   self.eff, delta_logz)
-
-    def run_nested(self, maxiter=None, maxcall=None, dlogz=None,
-                   logl_max=np.inf, n_effective=None,
-                   add_live=True, print_progress=True,
-                   save_bounds=True,
-                   addDerived=False,
-                   outputname="outputDynesty",
-                   simpleLike=None,
-                   print_params=True):
-        """
-        **A wrapper that executes the main nested sampling loop.**
-        Iteratively replace the worst live point with a sample drawn
-        uniformly from the prior until the provided stopping criteria
-        are reached.
-
-        Parameters
-        ----------
-        maxiter : int, optional
-            Maximum number of iterations. Iteration may stop earlier if the
-            termination condition is reached. Default is `sys.maxsize`
-            (no limit).
-
-        maxcall : int, optional
-            Maximum number of likelihood evaluations. Iteration may stop
-            earlier if termination condition is reached. Default is
-            `sys.maxsize` (no limit).
-
-        dlogz : float, optional
-            Iteration will stop when the estimated contribution of the
-            remaining prior volume to the total evidence falls below
-            this threshold. Explicitly, the stopping criterion is
-            `ln(z + z_est) - ln(z) < dlogz`, where `z` is the current
-            evidence from all saved samples and `z_est` is the estimated
-            contribution from the remaining volume. If `add_live` is `True`,
-            the default is `1e-3 * (nlive - 1) + 0.01`. Otherwise, the
-            default is `0.01`.
-
-        logl_max : float, optional
-            Iteration will stop when the sampled ln(likelihood) exceeds the
-            threshold set by `logl_max`. Default is no bound (`np.inf`).
-
-        n_effective: int, optional
-            Minimum number of effective posterior samples. If the estimated
-            "effective sample size" (ESS) exceeds this number,
-            sampling will terminate. Default is no ESS (`np.inf`).
-
-        add_live : bool, optional
-            Whether or not to add the remaining set of live points to
-            the list of samples at the end of each run. Default is `True`.
-
-        print_progress : bool, optional
-            Whether or not to output a simple summary of the current run that
-            updates with each iteration. Default is `True`.
-
-        print_func : function, optional
-            A function that prints out the current state of the sampler.
-            If not provided, the default :meth:`results.print_fn` is used.
-
-        save_bounds : bool, optional
-            Whether or not to save past bounding distributions used to bound
-            the live points internally. Default is *True*.
-
-        """
-        # Set parameters for the simplemc output text file
-        self.like = simpleLike
-        self.outputname = outputname
-        if self.like is not None:
-            self.derived = addDerived
-            self.cpars = self.like.freeParameters()
-            if (self.like.name() == "Composite"):
-                self.sublikenames = self.like.compositeNames()
-                self.composite = True
-            else:
-                self.composite = False
+        # Check proposed point.
+        v_prop = prior_transform(np.array(u_prop))
+        logl_prop = loglikelihood(np.array(v_prop))
+        if logl_prop >= loglstar:
+            u = u_prop
+            v = v_prop
+            logl = logl_prop
+            accept += 1
         else:
-            self.composite = False
+            reject += 1
+        nc += 1
+        ncall += 1
 
-        # Define our stopping criteria.
-        if dlogz is None:
-            if add_live:
-                dlogz = 1e-3 * (self.nlive - 1.) + 0.01
+        # Adjust `stagger` to target an acceptance ratio of `facc_target`.
+        facc = 1. * accept / (accept + reject)
+        if facc > facc_target:
+            stagger *= np.exp(1. / accept)
+        if facc < facc_target:
+            stagger /= math.exp(1. / reject)
+
+        # Check if we're stuck generating bad points.
+        if nc > 50 * walks:
+            scale *= math.exp(-1. / n)
+            warnings.warn("Random walk proposals appear to be "
+                          "extremely inefficient. Adjusting the "
+                          "scale-factor accordingly.")
+            nc, accept, reject = 0, 0, 0  # reset values
+
+    blob = {'accept': accept, 'reject': reject, 'fail': nfail, 'scale': scale}
+
+    return u, v, logl, ncall, blob
+
+
+def sample_slice(args):
+    """
+    Return a new live point proposed by a series of random slices
+    away from an existing live point. Standard "Gibs-like" implementation where
+    a single multivariate "slice" is a combination of `ndim` univariate slices
+    through each axis.
+
+    Parameters
+    ----------
+    u : `~numpy.ndarray` with shape (npdim,)
+        Position of the initial sample. **This is a copy of an existing live
+        point.**
+
+    loglstar : float
+        Ln(likelihood) bound.
+
+    axes : `~numpy.ndarray` with shape (ndim, ndim)
+        Axes used to propose new points. For slices new positions are
+        proposed along the arthogonal basis defined by :data:`axes`.
+
+    scale : float
+        Value used to scale the provided axes.
+
+    prior_transform : function
+        Function transforming a sample from the a unit cube to the parameter
+        space of interest according to the prior.
+
+    loglikelihood : function
+        Function returning ln(likelihood) given parameters as a 1-d `~numpy`
+        array of length `ndim`.
+
+    kwargs : dict
+        A dictionary of additional method-specific parameters.
+
+    Returns
+    -------
+    u : `~numpy.ndarray` with shape (npdim,)
+        Position of the final proposed point within the unit cube.
+
+    v : `~numpy.ndarray` with shape (ndim,)
+        Position of the final proposed point in the target parameter space.
+
+    logl : float
+        Ln(likelihood) of the final proposed point.
+
+    nc : int
+        Number of function calls used to generate the sample.
+
+    blob : dict
+        Collection of ancillary quantities used to tune :data:`scale`.
+
+    """
+
+    # Unzipping.
+    (u, loglstar, axes, scale,
+     prior_transform, loglikelihood, kwargs) = args
+    rstate = np.random
+
+    # Periodicity.
+    nonperiodic = kwargs.get('nonperiodic', None)
+
+    # Setup.
+    n = len(u)
+    slices = kwargs.get('slices', 5)  # number of slices
+    nc = 0
+    nexpand = 0
+    ncontract = 0
+    fscale = []
+
+    # Modifying axes and computing lengths.
+    axes = scale * axes.T  # scale based on past tuning
+    axlens = [linalg.norm(axis) for axis in axes]
+
+    # Slice sampling loop.
+    for it in range(slices):
+
+        # Shuffle axis update order.
+        idxs = np.arange(n)
+        rstate.shuffle(idxs)
+
+        # Slice sample along a random direction.
+        for idx in idxs:
+
+            # Select axis.
+            axis = axes[idx]
+            axlen = axlens[idx]
+
+            # Define starting "window".
+            r = rstate.rand()  # initial scale/offset
+            u_l = u - r * axis  # left bound
+            if unitcheck(u_l, nonperiodic):
+                v_l = prior_transform(np.array(u_l))
+                logl_l = loglikelihood(np.array(v_l))
             else:
-                dlogz = 0.01
+                logl_l = -np.inf
+            nc += 1
+            nexpand += 1
+            u_r = u + (1 - r) * axis  # right bound
+            if unitcheck(u_r, nonperiodic):
+                v_r = prior_transform(np.array(u_r))
+                logl_r = loglikelihood(np.array(v_r))
+            else:
+                logl_r = -np.inf
+            nc += 1
+            nexpand += 1
 
-        # Run the main nested sampling loop.
-        ncall = self.ncall
-        # Open text file to save samples for SimpleMC
-        f = open(self.outputname + '_1.txt', 'w+')
-        for it, results in enumerate(self.sample(maxiter=maxiter,
-                                                 maxcall=maxcall,
-                                                 dlogz=dlogz,
-                                                 logl_max=logl_max,
-                                                 save_bounds=save_bounds,
-                                                 save_samples=True,
-                                                 n_effective=n_effective,
-                                                 add_live=add_live)):
-            (worst, ustar, vstar, loglstar, logvol, logwt,
-             logz, logzvar, h, nc, worst_it, boundidx, bounditer,
-             eff, delta_logz) = results
-
-
-            ncall += nc
-            if delta_logz > 1e6:
-                delta_logz = np.inf
-            if logz <= -1e6:
-                logz = -np.inf
-
-            # Print progress.
-            if print_progress:
-                # Writing weights, likes and samples in a text file for simplemc output.
-
-                # hack when DESY5 is running, but fix it later (jav)
-                #a number is added cause result is super small(negative) number
-                #tmp = 1.0 if results[5]<-200 else 1
-                #weights = np.exp(results[5]*tmp)
-
-                vstarstr = str(results[2]).lstrip('[').rstrip(']')
-
-                if print_params:
-                    sys.stdout.write(self.print_txt.format(it, ncall, eff, logz, delta_logz, loglstar, vstarstr))
+            # "Stepping out" the left and right bounds.
+            while logl_l >= loglstar:
+                u_l -= axis
+                if unitcheck(u_l, nonperiodic):
+                    v_l = prior_transform(np.array(u_l))
+                    logl_l = loglikelihood(np.array(v_l))
                 else:
-                    sys.stdout.write(self.print_txt.format(it, ncall, eff, logz, delta_logz, loglstar, 0))
+                    logl_l = -np.inf
+                nc += 1
+                nexpand += 1
+            while logl_r >= loglstar:
+                u_r += axis
+                if unitcheck(u_r, nonperiodic):
+                    v_r = prior_transform(np.array(u_r))
+                    logl_r = loglikelihood(np.array(v_r))
+                else:
+                    logl_r = -np.inf
+                nc += 1
+                nexpand += 1
 
-                sys.stdout.flush()
+            # Sample within limits. If the sample is not valid, shrink
+            # the limits until we hit the `loglstar` bound.
+            window_init = linalg.norm(u_r - u_l)  # initial window size
+            while True:
+                # Define slice and window.
+                u_hat = u_r - u_l
+                window = linalg.norm(u_hat)
 
-                if addDerived:
-                    self.AD = AllDerived()
-                    # simpleLike -> simpleMC loglike object
-                    derivedstr = str([pd.value for pd in self.AD.listDerived(self.like)]).lstrip('[').rstrip(']')
-                    derivedstr = derivedstr.replace(",", "")
-                    vstarstr = "{} {}".format(vstarstr, derivedstr)
-                if self.composite:
-                    _, self.cloglikes = self.getLikes()
-                    ppars = copy.deepcopy(self.cpars)
-                    for i, param in enumerate(ppars):
-                        param.value = results[2][i]
-                    self.like.updateParams(ppars)
-                    compositestr = str(self.cloglikes.tolist()).lstrip('[').rstrip(']')
-                    compositestr = compositestr.replace(",", "")
-                    vstarstr = "{} {}".format(vstarstr, compositestr)
-                #rowstr = "{} {} {}".format(weights, -results[3], vstarstr)
-                rowstr = "{} {} {}".format(results[5], -results[3], vstarstr)
-                rowstr = " ".join(rowstr.split())
-                f.write("{}\n".format(rowstr))
-                f.flush()
-        f.close()
-        f = open(self.outputname + '_1.txt', "+a")
-        # Add remaining live points to samples.
-        if add_live:
-            for i, results in enumerate(self.add_live_points()):
-                (worst, ustar, vstar, loglstar, logvol, logwt,
-                 logz, logzvar, h, nc, worst_it, boundidx, bounditer,
-                 eff, delta_logz) = results
-                if delta_logz > 1e6:
-                    delta_logz = np.inf
-                if logz <= -1e6:
-                    logz = -np.inf
+                # Check if the slice has shrunk to be ridiculously small.
+                if window < 1e-5 * window_init:
+                    raise RuntimeError("Slice sampling appears to be "
+                                       "stuck! Some useful "
+                                       "output quantities:\n"
+                                       "u: {0}\n"
+                                       "u_left: {1}\n"
+                                       "u_right: {2}\n"
+                                       "u_hat: {3}\n"
+                                       "loglstar: {4}\n"
+                                       "axes: {5}\n"
+                                       "axlens: {6}."
+                                       .format(u, u_l, u_r, u_hat,
+                                               loglstar, axes, axlens))
 
-                # Writing weights, likes and samples in a text file for simplemc output.
+                # Propose a new position.
+                u_prop = u_l + rstate.rand() * u_hat  # scale from left
+                if unitcheck(u_prop, nonperiodic):
+                    v_prop = prior_transform(np.array(u_prop))
+                    logl_prop = loglikelihood(np.array(v_prop))
+                else:
+                    logl_prop = -np.inf
+                nc += 1
+                ncontract += 1
 
-                #tmp = 1.0 if results[5] < -200 else 1
-                #weights = np.exp(results[5]*tmp)
-                vstarstr = str(results[2]).lstrip('[').rstrip(']')
+                # If we succeed, move to the new position.
+                if logl_prop >= loglstar:
+                    fscale.append(window / axlen)
+                    u = u_prop
+                    break
+                # If we fail, check if the new point is to the left/right of
+                # our original point along our proposal axis and update
+                # the bounds accordingly.
+                else:
+                    s = np.dot(u_prop - u, u_hat)  # check sign (+/-)
+                    if s < 0:  # left
+                        u_l = u_prop
+                    elif s > 0:  # right
+                        u_r = u_prop
+                    else:
+                        # If `s = 0` something has gone horribly wrong.
+                        raise RuntimeError("Slice sampler has failed to find "
+                                           "a valid point. Some useful "
+                                           "output quantities:\n"
+                                           "u: {0}\n"
+                                           "u_left: {1}\n"
+                                           "u_right: {2}\n"
+                                           "u_hat: {3}\n"
+                                           "u_prop: {4}\n"
+                                           "loglstar: {5}\n"
+                                           "logl_prop: {6}\n"
+                                           "axes: {7}\n"
+                                           "axlens: {8}\n"
+                                           "s: {9}."
+                                           .format(u, u_l, u_r, u_hat, u_prop,
+                                                   loglstar, logl_prop,
+                                                   axes, axlens, s))
 
-                if addDerived:
-                    self.AD = AllDerived()
-                    # simpleLike -> simpleMC loglike object
-                    derivedstr = str([pd.value for pd in self.AD.listDerived(self.like)]).lstrip('[').rstrip(']')
-                    derivedstr = derivedstr.replace(",","")
-                    vstarstr = "{} {}".format(vstarstr, derivedstr)
-                if self.composite:
-                    _, self.cloglikes = self.getLikes()
-                    ppars = copy.deepcopy(self.cpars)
-                    for i, param in enumerate(ppars):
-                        param.value = results[2][i]
-                    self.like.updateParams(ppars)
-                    compositestr = str(self.cloglikes.tolist()).lstrip('[').rstrip(']')
-                    compositestr = compositestr.replace(",", "")
-                    vstarstr = "{} {}".format(vstarstr, compositestr)
-                #rowstr = "{} {} {}".format(weights, -results[3], vstarstr)
-                rowstr = "{} {} {}".format(results[5], -results[3], vstarstr)
-                rowstr = " ".join(rowstr.split())
-                f.write("{}\n".format(rowstr))
+    blob = {'fscale': np.mean(fscale),
+            'nexpand': nexpand, 'ncontract': ncontract}
 
-            f.close()
-            self.it = it+1
-
-    def add_final_live(self, print_progress=True):
-        """
-        **A wrapper that executes the loop adding the final live points.**
-        Adds the final set of live points to the pre-existing sequence of
-        dead points from the current nested sampling run.
-
-        Parameters
-        ----------
-        print_progress : bool, optional
-            Whether or not to output a simple summary of the current run that
-            updates with each iteration. Default is `True`.
-
-        print_func : function, optional
-            A function that prints out the current state of the sampler.
-            If not provided, the default :meth:`results.print_fn` is used.
-
-        """
-        ncall = self.ncall
-        sys.stdout.write("Adding final live points\n")
-        for i, results in enumerate(self.add_live_points()):
-            (worst, ustar, vstar, loglstar, logvol, logwt,
-             logz, logzvar, h, nc, worst_it, boundidx, bounditer,
-             eff, delta_logz) = results
-            if delta_logz > 1e6:
-                delta_logz = np.inf
-            if logz <= -1e6:
-                logz = -np.inf
-
-            # Print progress.
-            if print_progress:
-
-                #sys.stdout.write(self.print_txt.format(self.it + i, ncall, eff, logz, delta_logz, loglstar))
-                sys.stdout.write(self.print_txt.format(self.it+i, ncall, eff, logz,
-                                                                       delta_logz, loglstar, vstar))
-                sys.stdout.flush()
+    return u_prop, v_prop, logl_prop, nc, blob
 
 
-    def getLikes(self):
-        # This function is to extract the likelihoods for each observational dataset
-        # used in simplemc and write them in the output text file
-        if (self.composite):
-            cloglikes = self.like.compositeLogLikes_wprior()
-            cloglike = cloglikes.sum()
+def sample_rslice(args):
+    """
+    Return a new live point proposed by a series of random slices
+    away from an existing live point. Standard "random" implementation where
+    each slice is along a random direction based on the provided axes.
+
+    Parameters
+    ----------
+    u : `~numpy.ndarray` with shape (npdim,)
+        Position of the initial sample. **This is a copy of an existing live
+        point.**
+
+    loglstar : float
+        Ln(likelihood) bound.
+
+    axes : `~numpy.ndarray` with shape (ndim, ndim)
+        Axes used to propose new slice directions.
+
+    scale : float
+        Value used to scale the provided axes.
+
+    prior_transform : function
+        Function transforming a sample from the a unit cube to the parameter
+        space of interest according to the prior.
+
+    loglikelihood : function
+        Function returning ln(likelihood) given parameters as a 1-d `~numpy`
+        array of length `ndim`.
+
+    kwargs : dict
+        A dictionary of additional method-specific parameters.
+
+    Returns
+    -------
+    u : `~numpy.ndarray` with shape (npdim,)
+        Position of the final proposed point within the unit cube.
+
+    v : `~numpy.ndarray` with shape (ndim,)
+        Position of the final proposed point in the target parameter space.
+
+    logl : float
+        Ln(likelihood) of the final proposed point.
+
+    nc : int
+        Number of function calls used to generate the sample.
+
+    blob : dict
+        Collection of ancillary quantities used to tune :data:`scale`.
+
+    """
+
+    # Unzipping.
+    (u, loglstar, axes, scale,
+     prior_transform, loglikelihood, kwargs) = args
+    rstate = np.random
+
+    # Periodicity.
+    nonperiodic = kwargs.get('nonperiodic', None)
+
+    # Setup.
+    n = len(u)
+    slices = kwargs.get('slices', 5)  # number of slices
+    nc = 0
+    nexpand = 0
+    ncontract = 0
+    fscale = []
+
+    # Slice sampling loop.
+    for it in range(slices):
+
+        # Propose a direction on the unit n-sphere.
+        drhat = rstate.randn(n)
+        drhat /= linalg.norm(drhat)
+
+        # Transform and scale based on past tuning.
+        axis = np.dot(axes, drhat) * scale
+        axlen = linalg.norm(axis)
+
+        # Define starting "window".
+        r = rstate.rand()  # initial scale/offset
+        u_l = u - r * axis  # left bound
+        if unitcheck(u_l, nonperiodic):
+            v_l = prior_transform(np.array(u_l))
+            logl_l = loglikelihood(np.array(v_l))
         else:
-            cloglikes = []
-            cloglike = self.like.loglike_wprior()
-        return cloglike, cloglikes
+            logl_l = -np.inf
+        nc += 1
+        nexpand += 1
+        u_r = u + (1 - r) * axis  # right bound
+        if unitcheck(u_r, nonperiodic):
+            v_r = prior_transform(np.array(u_r))
+            logl_r = loglikelihood(np.array(v_r))
+        else:
+            logl_r = -np.inf
+        nc += 1
+        nexpand += 1
+
+        # "Stepping out" the left and right bounds.
+        while logl_l >= loglstar:
+            u_l -= axis
+            if unitcheck(u_l, nonperiodic):
+                v_l = prior_transform(np.array(u_l))
+                logl_l = loglikelihood(np.array(v_l))
+            else:
+                logl_l = -np.inf
+            nc += 1
+            nexpand += 1
+        while logl_r >= loglstar:
+            u_r += axis
+            if unitcheck(u_r, nonperiodic):
+                v_r = prior_transform(np.array(u_r))
+                logl_r = loglikelihood(np.array(v_r))
+            else:
+                logl_r = -np.inf
+            nc += 1
+            nexpand += 1
+
+        # Sample within limits. If the sample is not valid, shrink
+        # the limits until we hit the `loglstar` bound.
+        window_init = linalg.norm(u_r - u_l)  # initial window size
+        while True:
+            # Define slice and window.
+            u_hat = u_r - u_l
+            window = linalg.norm(u_hat)
+
+            # Check if the slice has shrunk to be ridiculously small.
+            if window < 1e-5 * window_init:
+                raise RuntimeError("Slice sampling appears to be "
+                                   "stuck! Some useful "
+                                   "output quantities:\n"
+                                   "u: {0}\n"
+                                   "u_left: {1}\n"
+                                   "u_right: {2}\n"
+                                   "u_hat: {3}\n"
+                                   "loglstar: {4}\n"
+                                   "axes: {5}\n"
+                                   "axlen: {6}."
+                                   .format(u, u_l, u_r, u_hat,
+                                           loglstar, axes, axlen))
+
+            # Propose new position.
+            u_prop = u_l + rstate.rand() * u_hat  # scale from left
+            if unitcheck(u_prop, nonperiodic):
+                v_prop = prior_transform(np.array(u_prop))
+                logl_prop = loglikelihood(np.array(v_prop))
+            else:
+                logl_prop = -np.inf
+            nc += 1
+            ncontract += 1
+
+            # If we succeed, move to the new position.
+            if logl_prop >= loglstar:
+                fscale.append(window / axlen)
+                u = u_prop
+                break
+            # If we fail, check if the new point is to the left/right of
+            # our original point along our proposal axis and update
+            # the bounds accordingly.
+            else:
+                s = np.dot(u_prop - u, u_hat)  # check sign (+/-)
+                if s < 0:  # left
+                    u_l = u_prop
+                elif s > 0:  # right
+                    u_r = u_prop
+                else:
+                    # If `s = 0` something has gone horribly wrong.
+                    raise RuntimeError("Slice sampler has failed to find "
+                                       "a valid point. Some useful "
+                                       "output quantities:\n"
+                                       "u: {0}\n"
+                                       "u_left: {1}\n"
+                                       "u_right: {2}\n"
+                                       "u_hat: {3}\n"
+                                       "u_prop: {4}\n"
+                                       "loglstar: {5}\n"
+                                       "logl_prop: {6}\n"
+                                       "axis: {7}\n"
+                                       "axlen: {8}\n"
+                                       "s: {9}."
+                                       .format(u, u_l, u_r, u_hat, u_prop,
+                                               loglstar, logl_prop,
+                                               axis, axlen, s))
+
+    blob = {'fscale': np.mean(fscale),
+            'nexpand': nexpand, 'ncontract': ncontract}
+
+    return u_prop, v_prop, logl_prop, nc, blob
+
+
+def sample_hslice(args):
+    """
+    Return a new live point proposed by "Hamiltonian" Slice Sampling
+    using a series of random trajectories away from an existing live point.
+    Each trajectory is based on the provided axes and samples are determined
+    by moving forwards/backwards in time until the trajectory hits an edge
+    and approximately reflecting off the boundaries.
+    Once a series of reflections has been established, we propose a new live
+    point by slice sampling across the entire path.
+
+    Parameters
+    ----------
+    u : `~numpy.ndarray` with shape (npdim,)
+        Position of the initial sample. **This is a copy of an existing live
+        point.**
+
+    loglstar : float
+        Ln(likelihood) bound.
+
+    axes : `~numpy.ndarray` with shape (ndim, ndim)
+        Axes used to propose new slice directions.
+
+    scale : float
+        Value used to scale the provided axes.
+
+    prior_transform : function
+        Function transforming a sample from the a unit cube to the parameter
+        space of interest according to the prior.
+
+    loglikelihood : function
+        Function returning ln(likelihood) given parameters as a 1-d `~numpy`
+        array of length `ndim`.
+
+    kwargs : dict
+        A dictionary of additional method-specific parameters.
+
+    Returns
+    -------
+    u : `~numpy.ndarray` with shape (npdim,)
+        Position of the final proposed point within the unit cube.
+
+    v : `~numpy.ndarray` with shape (ndim,)
+        Position of the final proposed point in the target parameter space.
+
+    logl : float
+        Ln(likelihood) of the final proposed point.
+
+    nc : int
+        Number of function calls used to generate the sample.
+
+    blob : dict
+        Collection of ancillary quantities used to tune :data:`scale`.
+
+    """
+
+    # Unzipping.
+    (u, loglstar, axes, scale,
+     prior_transform, loglikelihood, kwargs) = args
+    rstate = np.random
+
+    # Periodicity.
+    nonperiodic = kwargs.get('nonperiodic', None)
+
+    # Setup.
+    n = len(u)
+    slices = kwargs.get('slices', 5)  # number of slices
+    grad = kwargs.get('grad', None)  # gradient of log-likelihood
+    max_move = kwargs.get('max_move', 100)  # limit for `ncall`
+    compute_jac = kwargs.get('compute_jac', False)  # whether Jacobian needed
+    jitter = 0.25  # 25% jitter
+    nc = 0
+    nmove = 0
+    nreflect = 0
+    ncontract = 0
+
+    # Slice sampling loop.
+    for it in range(slices):
+        # Define the left, "inner", and right "nodes" for a given chord.
+        # We will plan to slice sampling using these chords.
+        nodes_l, nodes_m, nodes_r = [], [], []
+
+        # Propose a direction on the unit n-sphere.
+        drhat = rstate.randn(n)
+        drhat /= linalg.norm(drhat)
+
+        # Transform and scale based on past tuning.
+        axis = np.dot(axes, drhat) * scale * 0.01
+
+        # Create starting window.
+        vel = np.array(axis)  # current velocity
+        u_l = u - rstate.uniform(1. - jitter, 1. + jitter) * vel
+        u_r = u + rstate.uniform(1. - jitter, 1. + jitter) * vel
+        nodes_l.append(np.array(u_l))
+        nodes_m.append(np.array(u))
+        nodes_r.append(np.array(u_r))
+
+        # Progress "right" (i.e. "forwards" in time).
+        reverse, reflect = False, False
+        u_r = np.array(u)
+        ncall = 0
+        while ncall <= max_move:
+
+            # Iterate until we can bracket the edge of the distribution.
+            nodes_l.append(np.array(u_r))
+            u_out, u_in = None, []
+            while True:
+                # Step forward.
+                u_r += rstate.uniform(1. - jitter, 1. + jitter) * vel
+                # Evaluate point.
+                if unitcheck(u_r, nonperiodic):
+                    v_r = prior_transform(np.array(u_r))
+                    logl_r = loglikelihood(np.array(v_r))
+                    nc += 1
+                    ncall += 1
+                    nmove += 1
+                else:
+                    logl_r = -np.inf
+                # Check if we satisfy the log-likelihood constraint
+                # (i.e. are "in" or "out" of bounds).
+                if logl_r < loglstar:
+                    if reflect:
+                        # If we are out of bounds and just reflected, we
+                        # reverse direction and terminate immediately.
+                        reverse = True
+                        nodes_l.pop()  # remove since chord does not exist
+                        break
+                    else:
+                        # If we're already in bounds, then we're safe.
+                        u_out = np.array(u_r)
+                        logl_out = logl_r
+                    # Check if we could compute gradients assuming we
+                    # terminated with the current `u_out`.
+                    if np.isfinite(logl_out):
+                        reverse = False
+                    else:
+                        reverse = True
+                else:
+                    reflect = False
+                    u_in.append(np.array(u_r))
+                # Check if we've bracketed the edge.
+                if u_out is not None:
+                    break
+            # Define the rest of our chord.
+            if len(nodes_l) == len(nodes_r) + 1:
+                try:
+                    u_in = u_in[rstate.choice(len(u_in))]  # pick point randomly
+                except:
+                    u_in = np.array(u)
+                    pass
+                nodes_m.append(np.array(u_in))
+                nodes_r.append(np.array(u_out))
+            # Check if we have turned around.
+            if reverse:
+                break
+
+            # Reflect off the boundary.
+            u_r, logl_r = u_out, logl_out
+            if grad is None:
+                # If the gradient is not provided, we will attempt to
+                # approximate it numerically using 2nd-order methods.
+                h = np.zeros(n)
+                for i in range(n):
+                    u_r_l, u_r_r = np.array(u_r), np.array(u_r)
+                    # right side
+                    u_r_r[i] += 1e-10
+                    if unitcheck(u_r_r, nonperiodic):
+                        v_r_r = prior_transform(np.array(u_r_r))
+                        logl_r_r = loglikelihood(np.array(v_r_r))
+                    else:
+                        logl_r_r = -np.inf
+                        reverse = True  # can't compute gradient
+                    nc += 1
+                    # left side
+                    u_r_l[i] -= 1e-10
+                    if unitcheck(u_r_l, nonperiodic):
+                        v_r_l = prior_transform(np.array(u_r_l))
+                        logl_r_l = loglikelihood(np.array(v_r_l))
+                    else:
+                        logl_r_l = -np.inf
+                        reverse = True  # can't compute gradient
+                    if reverse:
+                        break  # give up because we have to turn around
+                    nc += 1
+                    # compute dlnl/du
+                    h[i] = (logl_r_r - logl_r_l) / 2e-10
+            else:
+                # If the gradient is provided, evaluate it.
+                h = grad(v_r)
+                if compute_jac:
+                    jac = []
+                    # Evaluate and apply Jacobian dv/du if gradient
+                    # is defined as d(lnL)/dv instead of d(lnL)/du.
+                    for i in range(n):
+                        u_r_l, u_r_r = np.array(u_r), np.array(u_r)
+                        # right side
+                        u_r_r[i] += 1e-10
+                        if unitcheck(u_r_r, nonperiodic):
+                            v_r_r = prior_transform(np.array(u_r_r))
+                        else:
+                            reverse = True  # can't compute Jacobian
+                            v_r_r = np.array(v_r)  # assume no movement
+                        # left side
+                        u_r_l[i] -= 1e-10
+                        if unitcheck(u_r_l, nonperiodic):
+                            v_r_l = prior_transform(np.array(u_r_l))
+                        else:
+                            reverse = True  # can't compute Jacobian
+                            v_r_r = np.array(v_r)  # assume no movement
+                        if reverse:
+                            break  # give up because we have to turn around
+                        jac.append((v_r_r - v_r_l) / 2e-10)
+                    jac = np.array(jac)
+                    h = np.dot(jac, h)  # apply Jacobian
+                nc += 1
+            # Compute specular reflection off boundary.
+            vel_ref = vel - 2 * h * np.dot(vel, h) / linalg.norm(h)**2
+            dotprod = np.dot(vel_ref, vel)
+            dotprod /= linalg.norm(vel_ref) * linalg.norm(vel)
+            # Check angle of reflection.
+            if dotprod < -0.99:
+                # The reflection angle is sufficiently small that it might
+                # as well be a reflection.
+                reverse = True
+                break
+            else:
+                # If the reflection angle is sufficiently large, we
+                # proceed as normal to the new position.
+                vel = vel_ref
+                u_out = None
+                reflect = True
+                nreflect += 1
+
+        # Progress "left" (i.e. "backwards" in time).
+        reverse, reflect = False, False
+        vel = -np.array(axis)  # current velocity
+        u_l = np.array(u)
+        ncall = 0
+        while ncall <= max_move:
+
+            # Iterate until we can bracket the edge of the distribution.
+            # Use a doubling approach to try and locate the bounds faster.
+            nodes_r.append(np.array(u_l))
+            u_out, u_in = None, []
+            while True:
+                # Step forward.
+                u_l += rstate.uniform(1. - jitter, 1. + jitter) * vel
+                # Evaluate point.
+                if unitcheck(u_l, nonperiodic):
+                    v_l = prior_transform(np.array(u_l))
+                    logl_l = loglikelihood(np.array(v_l))
+                    nc += 1
+                    ncall += 1
+                    nmove += 1
+                else:
+                    logl_l = -np.inf
+                # Check if we satisfy the log-likelihood constraint
+                # (i.e. are "in" or "out" of bounds).
+                if logl_l < loglstar:
+                    if reflect:
+                        # If we are out of bounds and just reflected, we
+                        # reverse direction and terminate immediately.
+                        reverse = True
+                        nodes_r.pop()  # remove since chord does not exist
+                        break
+                    else:
+                        # If we're already in bounds, then we're safe.
+                        u_out = np.array(u_l)
+                        logl_out = logl_l
+                    # Check if we could compute gradients assuming we
+                    # terminated with the current `u_out`.
+                    if np.isfinite(logl_out):
+                        reverse = False
+                    else:
+                        reverse = True
+                else:
+                    reflect = False
+                    u_in.append(np.array(u_l))
+                # Check if we've bracketed the edge.
+                if u_out is not None:
+                    break
+            # Define the rest of our chord.
+            if len(nodes_r) == len(nodes_l) + 1:
+                try:
+                    u_in = u_in[rstate.choice(len(u_in))]  # pick point randomly
+                except:
+                    u_in = np.array(u)
+                    pass
+                nodes_m.append(np.array(u_in))
+                nodes_l.append(np.array(u_out))
+            # Check if we have turned around.
+            if reverse:
+                break
+
+            # Reflect off the boundary.
+            u_l, logl_l = u_out, logl_out
+            if grad is None:
+                # If the gradient is not provided, we will attempt to
+                # approximate it numerically using 2nd-order methods.
+                h = np.zeros(n)
+                for i in range(n):
+                    u_l_l, u_l_r = np.array(u_l), np.array(u_l)
+                    # right side
+                    u_l_r[i] += 1e-10
+                    if unitcheck(u_l_r, nonperiodic):
+                        v_l_r = prior_transform(np.array(u_l_r))
+                        logl_l_r = loglikelihood(np.array(v_l_r))
+                    else:
+                        logl_l_r = -np.inf
+                        reverse = True  # can't compute gradient
+                    nc += 1
+                    # left side
+                    u_l_l[i] -= 1e-10
+                    if unitcheck(u_l_l, nonperiodic):
+                        v_l_l = prior_transform(np.array(u_l_l))
+                        logl_l_l = loglikelihood(np.array(v_l_l))
+                    else:
+                        logl_l_l = -np.inf
+                        reverse = True  # can't compute gradient
+                    if reverse:
+                        break  # give up because we have to turn around
+                    nc += 1
+                    # compute dlnl/du
+                    h[i] = (logl_l_r - logl_l_l) / 2e-10
+            else:
+                # If the gradient is provided, evaluate it.
+                h = grad(v_l)
+                if compute_jac:
+                    jac = []
+                    # Evaluate and apply Jacobian dv/du if gradient
+                    # is defined as d(lnL)/dv instead of d(lnL)/du.
+                    for i in range(n):
+                        u_l_l, u_l_r = np.array(u_l), np.array(u_l)
+                        # right side
+                        u_l_r[i] += 1e-10
+                        if unitcheck(u_l_r, nonperiodic):
+                            v_l_r = prior_transform(np.array(u_l_r))
+                        else:
+                            reverse = True  # can't compute Jacobian
+                            v_l_r = np.array(v_l)  # assume no movement
+                        # left side
+                        u_l_l[i] -= 1e-10
+                        if unitcheck(u_l_l, nonperiodic):
+                            v_l_l = prior_transform(np.array(u_l_l))
+                        else:
+                            reverse = True  # can't compute Jacobian
+                            v_l_r = np.array(v_l)  # assume no movement
+                        if reverse:
+                            break  # give up because we have to turn around
+                        jac.append((v_l_r - v_l_l) / 2e-10)
+                    jac = np.array(jac)
+                    h = np.dot(jac, h)  # apply Jacobian
+                nc += 1
+            # Compute specular reflection off boundary.
+            vel_ref = vel - 2 * h * np.dot(vel, h) / linalg.norm(h)**2
+            dotprod = np.dot(vel_ref, vel)
+            dotprod /= linalg.norm(vel_ref) * linalg.norm(vel)
+            # Check angle of reflection.
+            if dotprod < -0.99:
+                # The reflection angle is sufficiently small that it might
+                # as well be a reflection.
+                reverse = True
+                break
+            else:
+                # If the reflection angle is sufficiently large, we
+                # proceed as normal to the new position.
+                vel = vel_ref
+                u_out = None
+                reflect = True
+                nreflect += 1
+
+        # Initialize lengths of chords.
+        if len(nodes_l) > 1:
+            # remove initial fallback chord
+            nodes_l.pop(0)
+            nodes_m.pop(0)
+            nodes_r.pop(0)
+        nodes_l, nodes_m, nodes_r = (np.array(nodes_l), np.array(nodes_m),
+                                     np.array(nodes_r))
+        Nchords = len(nodes_l)
+        axlen = np.zeros(Nchords, dtype='float')
+        for i, (nl, nm, nr) in enumerate(zip(nodes_l, nodes_m, nodes_r)):
+            axlen[i] = linalg.norm(nr - nl)
+
+        # Slice sample from all chords simultaneously. This is equivalent to
+        # slice sampling in *time* along our trajectory.
+        axlen_init = np.array(axlen)
+        while True:
+            # Safety check.
+            if np.any(axlen < 1e-5 * axlen_init):
+                raise RuntimeError("Hamiltonian slice sampling appears to be "
+                                   "stuck! Some useful output quantities:\n"
+                                   "u: {0}\n"
+                                   "u_left: {1}\n"
+                                   "u_right: {2}\n"
+                                   "loglstar: {3}."
+                                   .format(u, u_l, u_r, loglstar))
+
+            # Select chord.
+            axprob = axlen / np.sum(axlen)
+            idx = rstate.choice(Nchords, p=axprob)
+            # Define chord.
+            u_l, u_m, u_r = nodes_l[idx], nodes_m[idx], nodes_r[idx]
+            u_hat = u_r - u_l
+            rprop = rstate.rand()
+            u_prop = u_l + rprop * u_hat  # scale from left
+            if unitcheck(u_prop, nonperiodic):
+                v_prop = prior_transform(np.array(u_prop))
+                logl_prop = loglikelihood(np.array(v_prop))
+            else:
+                logl_prop = -np.inf
+            nc += 1
+            ncontract += 1
+            # If we succeed, move to the new position.
+            if logl_prop >= loglstar:
+                u = u_prop
+                break
+            # If we fail, check if the new point is to the left/right of
+            # the point interior to the bounds (`u_m`) and update
+            # the bounds accordingly.
+            else:
+                s = np.dot(u_prop - u_m, u_hat)  # check sign (+/-)
+                if s < 0:  # left
+                    nodes_l[idx] = u_prop
+                    axlen[idx] *= 1 - rprop
+                elif s > 0:  # right
+                    nodes_r[idx] = u_prop
+                    axlen[idx] *= rprop
+                else:
+                    raise RuntimeError("Slice sampler has failed to find "
+                                       "a valid point. Some useful "
+                                       "output quantities:\n"
+                                       "u: {0}\n"
+                                       "u_left: {1}\n"
+                                       "u_right: {2}\n"
+                                       "u_hat: {3}\n"
+                                       "u_prop: {4}\n"
+                                       "loglstar: {5}\n"
+                                       "logl_prop: {6}."
+                                       .format(u, u_l, u_r, u_hat, u_prop,
+                                               loglstar, logl_prop))
+
+    blob = {'nmove': nmove, 'nreflect': nreflect, 'ncontract': ncontract}
+
+    return u_prop, v_prop, logl_prop, nc, blob
