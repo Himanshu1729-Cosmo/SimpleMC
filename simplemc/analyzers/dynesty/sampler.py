@@ -959,9 +959,8 @@ class Sampler(object):
 
                 # hack when DESY5 is running, but fix it later (jav)
                 #a number is added cause result is super small(negative) number
-                tmp = 1.0 if results[5]<-200 else 1
-
-                weights = np.exp(results[5]*tmp)
+                #tmp = 1.0 if results[5]<-200 else 1
+                #weights = np.exp(results[5]*tmp)
 
                 vstarstr = str(results[2]).lstrip('[').rstrip(']')
 
@@ -987,7 +986,8 @@ class Sampler(object):
                     compositestr = str(self.cloglikes.tolist()).lstrip('[').rstrip(']')
                     compositestr = compositestr.replace(",", "")
                     vstarstr = "{} {}".format(vstarstr, compositestr)
-                rowstr = "{} {} {}".format(weights, -results[3], vstarstr)
+                #rowstr = "{} {} {}".format(weights, -results[3], vstarstr)
+                rowstr = "{} {} {}".format(results[5], -results[3], vstarstr)
                 rowstr = " ".join(rowstr.split())
                 f.write("{}\n".format(rowstr))
                 f.flush()
@@ -1006,8 +1006,8 @@ class Sampler(object):
 
                 # Writing weights, likes and samples in a text file for simplemc output.
 
-                tmp = 1.0 if results[5] < -200 else 1
-                weights = np.exp(results[5]*tmp)
+                #tmp = 1.0 if results[5] < -200 else 1
+                #weights = np.exp(results[5]*tmp)
                 vstarstr = str(results[2]).lstrip('[').rstrip(']')
 
                 if addDerived:
@@ -1025,7 +1025,8 @@ class Sampler(object):
                     compositestr = str(self.cloglikes.tolist()).lstrip('[').rstrip(']')
                     compositestr = compositestr.replace(",", "")
                     vstarstr = "{} {}".format(vstarstr, compositestr)
-                rowstr = "{} {} {}".format(weights, -results[3], vstarstr)
+                #rowstr = "{} {} {}".format(weights, -results[3], vstarstr)
+                rowstr = "{} {} {}".format(results[5], -results[3], vstarstr)
                 rowstr = " ".join(rowstr.split())
                 f.write("{}\n".format(rowstr))
 
