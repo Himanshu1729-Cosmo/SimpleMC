@@ -23,9 +23,16 @@ You can install simplemc on your computer using:
      
      # core packages required
      pip install  matplotlib numdifftools mpi4py
-     pip install numpy==1.23.5
-     pip install scikit-learn==1.2.2
-     pip install scipy==1.10.1
+     pip install numpy==1.26.4
+     pip install scikit-learn==1.3.2
+     pip install scipy==1.11.4
+
+     or with conda (better for scientific stacks):
+
+     conda install numpy=1.26.4
+     conda install scipy=1.11.4
+     conda install scikit-learn=1.3.2
+     
      conda install -c conda-forge pandas
      
      $ cd SimpleMC
