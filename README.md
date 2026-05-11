@@ -26,18 +26,26 @@ You can install simplemc on your computer using:
      pip install numpy==1.26.4
      pip install scikit-learn==1.3.2
      pip install scipy==1.11.4
+     pip install pandas matplotlib numdifftools mpi4py
 
      or with conda (better for scientific stacks):
 
      conda install numpy=1.26.4
      conda install scipy=1.11.4
      conda install scikit-learn=1.3.2
+     conda install -c conda-forge pandas matplotlib numdifftools mpi4py
+
+     Install SimpleMC:
      
-     conda install -c conda-forge pandas
+     $ cd simplemc
+
+     # For editable/development mode:
      
-     $ cd SimpleMC
+     pip install -e .
+
+     # or for a normal installation:
      
-     $ pip3 install -e . or pip install .
+     pip install .
 
 then you can delete the cloned repo because you must have `simplemc` installed locally. 
 
